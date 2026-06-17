@@ -561,8 +561,8 @@ async def start(bot, message):
     random_image_url = random.choice(image_list)
 
     keyboard = [ 
-        [InlineKeyboardButton(" Physics Wallah without Purchase ", callback_data="pwwp")],
-        [InlineKeyboardButton(" Classplus without Purchase ", callback_data="cpwp")]
+        [InlineKeyboardButton("🚀 PHYSICS WALLAH 🚀 ", callback_data="pwwp")],
+        [InlineKeyboardButton("🚀 CLASSPLUS APPS 🚀 ", callback_data="cpwp")]
     ]
   
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -588,7 +588,7 @@ async def pwwp_callback(bot, callback_query):
     await callback_query.answer()
     
     if user_id not in auth_users:
-        await bot.send_message(callback_query.message.chat.id, "**You Are Not Subscribed To This Bot DM for access @SmartBoy_ApnaMS**")
+        await bot.send_message(callback_query.message.chat.id, "**You Are Not Subscribed To This Bot\nSo DM me for access\nID: @SmartBoy_ApnaMS**")
         return
         
     # FIXED: Properly wrap async function for ThreadPool
@@ -600,14 +600,14 @@ async def pwwp_callback(bot, callback_query):
 # ═══════════════════════════════════════════════════════════════
 async def process_pwwp(bot: Client, m: Message, user_id: int):
 
-    editable = await m.reply_text("**Enter Working Access Token\n\nOR\n\nEnter Phone Number**")
+    editable = await m.reply_text("**Enter Working Access Token\n\nOR\n\nEnter Phone Number\n\nNOTE: Jis Batch Ka Token hai uska Sara Content aayega with Videos & PDFs🚀, But Agar Us Batch ka Token nahi to Sirf Notes & DPP PDFs hi Milegi😒.**")
 
     try:
         input1 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
         raw_text1 = input1.text
         await input1.delete(True)
     except:
-        await editable.edit("**Timeout! You took too long to respond**")
+        await editable.edit("**Timeout! You took too long to respond😢.**")
         return
 
     headers = {
@@ -686,13 +686,13 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
                 await editable.edit("**```\nLogin Failed TOKEN IS EXPIRED```\nPlease Enter Working Token\n                       OR\nLogin With Phone Number**")
                 return
         
-            await editable.edit("**Enter Your Batch Name**")
+            await editable.edit("**Enter Your Batch Name\n\nRemeber Only Purchased Batch ke Videos hi aayenge Otherwise Sirf PDFs😐.**")
             try:
                 input3 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
                 batch_search = input3.text
                 await input3.delete(True)
             except:
-                await editable.edit("**Timeout! You took too long to respond**")
+                await editable.edit("**Timeout! You took too long to respond😢.**")
                 return
                 
             url = f"https://api.penpencil.co/v3/batches/search?name={batch_search}"
@@ -711,7 +711,7 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
                     raw_text4 = input4.text
                     await input4.delete(True)
                 except:
-                    await editable.edit("**Timeout! You took too long to respond**")
+                    await editable.edit("**Timeout! You took too long to respond😢.**")
                     return
                 
                 if input4.text.isdigit() and 1 <= int(input4.text) <= len(courses):
@@ -737,7 +737,7 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
                             raw_text5 = input5.text
                             await input5.delete(True)
                         except:
-                            await editable.edit("**Timeout! You took too long to respond**")
+                            await editable.edit("**Timeout! You took too long to respond😢.**")
                             return
                 
                         if input5.text.isdigit() and 1 <= int(input5.text) <= len(courses):
@@ -759,7 +759,7 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
                     raw_text6 = input6.text
                     await input6.delete(True)
                 except ListenerTimeout:
-                    await editable.edit("**Timeout! You took too long to respond**")
+                    await editable.edit("**Timeout! You took too long to respond😢.**")
                     return
                 except Exception as e:
                     logging.exception("Error during option listening:")
