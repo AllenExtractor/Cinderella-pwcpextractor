@@ -50,14 +50,14 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 bot = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # Flask app for Render
-app = Flask(__name__)
+app_flask = Flask(__name__)
 
-@app.route('/')
+@app_flask.route('/')
 def home():
     return "Bot is running!"
 
 def run_flask():
-    app.run(host="0.0.0.0", port=8000)
+    app_flask.run(host="0.0.0.0", port=8000)
 
 image_list = [
     "https://graph.org/file/d24b9bd4d0592a07ad746-de047531c5efafafce.jpg",
@@ -70,16 +70,107 @@ print(4321)
 
 
 # ═══════════════════════════════════════════════════════════════
+# ADVANCED MOBILE HEADERS for PW API (from working reference pw(3).py)
+# ═══════════════════════════════════════════════════════════════
+def get_pw_mobile_headers(token: str) -> Dict[str, str]:
+    """Get properly configured MOBILE headers for PW API access.
+    Using MOBILE client-type with proper device-meta gives broader
+    access to ALL batches (purchased + non-purchased)."""
+    return {
+        "client-id": "5eb393ee95fab7468a79d189",
+        "client-type": "MOBILE",
+        "client-version": "538",
+        "device-meta": '{"APP_VERSION":"538","APP_VERSION_NAME":"15.32.0","DEVICE_MAKE":"Samsung","DEVICE_MODEL":"SM-A707F","OS_VERSION":"11","PACKAGE_NAME":"xyz.penpencil.physicswala","network":"wifi_data","carrier":"UNDEFINED"}',
+        "randomId": "3d3b49f068728fa3",
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+        "Referer": "https://android.pw.live",
+        "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 11; SM-A707F Build/RP1A.200720.012)"
+    }
+
+
+def get_pw_login_headers() -> Dict[str, str]:
+    """Headers for login/OTP operations"""
+    return {
+        "client-id": "5eb393ee95fab7468a79d189",
+        "client-version": "12.84",
+        "Client-Type": "MOBILE",
+        "randomId": "e4307177362e86f1",
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/json"
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
+# VIDEO URL EXTRACTOR (from pw(3).py working reference)
+# ═══════════════════════════════════════════════════════════════
+def extract_video_data_from_schedule(schedule_details_data):
+    """Extract MPD/CloudFront video URL with DRM keys from schedule-details response."""
+    video_info = {}
+    if not schedule_details_data or not schedule_details_data.get("data"):
+        return video_info
+
+    data = schedule_details_data["data"]
+    video_details = data.get("videoDetails", {})
+
+    if video_details:
+        # Primary: Get the MPD URL (CloudFront signed URL)
+        video_url = video_details.get("videoUrl") or video_details.get("url") or ""
+        if video_url and ".mpd" in video_url.lower():
+            video_info["mpd_url"] = video_url
+
+        # Also check for embedCode as fallback
+        embed_code = video_details.get("embedCode", "")
+        if embed_code and not video_info.get("mpd_url"):
+            if embed_code.startswith("http"):
+                video_info["video_url"] = embed_code
+
+        # Extract DRM/ClearKey info if available
+        drm_type = video_details.get("drmType", "")
+        key_id = video_details.get("keyId", "") or video_details.get("kid", "")
+        if drm_type and key_id:
+            video_info["drm_type"] = drm_type
+            video_info["key_id"] = key_id
+
+        # Get video ID for reference
+        vid = video_details.get("id", "") or video_details.get("_id", "")
+        if vid:
+            video_info["video_id"] = vid
+
+    # Also check for direct url in data
+    if not video_info.get("mpd_url") and not video_info.get("video_url"):
+        direct_url = data.get("url", "")
+        if direct_url:
+            video_info["video_url"] = direct_url
+
+    return video_info
+
+
+def format_video_line(topic, video_info):
+    """Format video data into extractable line with all info"""
+    lines = []
+    topic_clean = topic.replace(":", "_").replace("/", "-")
+
+    if video_info.get("mpd_url"):
+        # MPD format with DRM keys
+        line = f"{topic_clean}:{video_info['mpd_url']}"
+        if video_info.get("drm_type") and video_info.get("key_id"):
+            line += f" | DRM:{video_info['drm_type']} | KID:{video_info['key_id']}"
+        lines.append(line)
+    elif video_info.get("video_url"):
+        lines.append(f"{topic_clean}:{video_info['video_url']}")
+
+    return lines
+
+
+# ═══════════════════════════════════════════════════════════════
 # ADVANCED: Extract ParentId, ChildId, VideoId from PW API data
 # ═══════════════════════════════════════════════════════════════
 def extract_pw_ids(video_details: dict, schedule_data: dict = None, schedule_id: str = "", batch_id: str = "") -> Tuple[str, str, str]:
     """
     Advanced ID extraction from PW API response data.
-    
     Returns: (parent_id, child_id, video_id)
-    - parent_id: The batch ID (schedule_data's batchId or batch_id param)
-    - child_id: The schedule/content ID (schedule_data's _id or schedule_id param)
-    - video_id: The video's unique _id from videoDetails
     """
     parent_id = ""
     child_id = ""
@@ -88,53 +179,23 @@ def extract_pw_ids(video_details: dict, schedule_data: dict = None, schedule_id:
     if not video_details:
         return parent_id, child_id, video_id
     
-    # ═══ EXTRACT video_id from videoDetails ═══
-    # Try multiple possible fields for video ID
-    if video_details.get('_id'):
-        video_id = video_details['_id']
-    elif video_details.get('id'):
-        video_id = video_details['id']
-    elif video_details.get('videoId'):
-        video_id = video_details['videoId']
-    elif video_details.get('contentId'):
-        video_id = video_details['contentId']
+    # video_id: from videoDetails
+    video_id = video_details.get('_id') or video_details.get('id') or video_details.get('videoId') or video_details.get('contentId', '')
     
-    # ═══ EXTRACT parent_id (Batch ID) ═══
-    if batch_id:
-        parent_id = batch_id
-    elif schedule_data:
-        if schedule_data.get('batchId'):
-            parent_id = schedule_data['batchId']
-        elif schedule_data.get('batchSubjectId'):
-            parent_id = schedule_data['batchSubjectId']
+    # parent_id: Batch ID
+    parent_id = batch_id or (schedule_data.get('batchId') if schedule_data else '') or (schedule_data.get('batchSubjectId') if schedule_data else '')
     
-    # ═══ EXTRACT child_id (Schedule/Content ID) ═══
-    if schedule_id:
-        child_id = schedule_id
-    elif schedule_data:
-        if schedule_data.get('_id'):
-            child_id = schedule_data['_id']
-        elif schedule_data.get('id'):
-            child_id = schedule_data['id']
-        elif schedule_data.get('scheduleId'):
-            child_id = schedule_data['scheduleId']
+    # child_id: Schedule/Content ID
+    child_id = schedule_id or (schedule_data.get('_id') if schedule_data else '') or (schedule_data.get('id') if schedule_data else '') or (schedule_data.get('scheduleId') if schedule_data else '')
     
     return parent_id, child_id, video_id
 
 
 def append_video_params(video_url: str, parent_id: str = "", child_id: str = "", video_id: str = "") -> str:
-    """
-    Advanced: Append parentId, childId, videoId to video URL.
-    
-    Format: {video_url}&parentId={parent_id}&childId={child_id}&videoId={video_id}
-    
-    Only appends parameters that have valid (non-empty) values.
-    Preserves existing URL query parameters.
-    """
+    """Append parentId, childId, videoId to video URL."""
     if not video_url:
         return video_url
     
-    # Build param string - only include non-empty IDs
     params = []
     if parent_id and str(parent_id).strip():
         params.append(f"parentId={str(parent_id).strip()}")
@@ -146,15 +207,7 @@ def append_video_params(video_url: str, parent_id: str = "", child_id: str = "",
     if not params:
         return video_url
     
-    # Check if URL already has query parameters
-    if '?' in video_url:
-        # URL already has params, append with &
-        separator = '&'
-    else:
-        # No existing params - use & as per PW format (seen in reference files)
-        # Reference format: master.mpd&parentId=...&childId=...&videoId=...
-        separator = '&'
-    
+    separator = '&' if '?' in video_url else '?'
     param_string = separator + '&'.join(params)
     return video_url + param_string
 
@@ -163,13 +216,7 @@ def append_video_params(video_url: str, parent_id: str = "", child_id: str = "",
 # UTILITY: Extract video URL from various PW API response formats
 # ═══════════════════════════════════════════════════════════════
 def extract_video_url(video_details: dict, parent_id: str = "", child_id: str = "", video_id: str = "") -> Tuple[str, str]:
-    """
-    Extract video URL and DRM keys from PW videoDetails.
-    Now with ADVANCED support for parentId, childId, videoId parameters.
-    
-    Returns: (video_url, drm_info_string)
-    drm_info_string format: " | DRM: ClearKey | --key KID:KEY" or empty string
-    """
+    """Extract video URL and DRM keys from PW videoDetails with ADVANCED IDs."""
     if not video_details:
         return "", ""
 
@@ -183,7 +230,6 @@ def extract_video_url(video_details: dict, parent_id: str = "", child_id: str = 
     # 2. Try videoMapping (most common for newer PW videos)
     video_mapping = video_details.get('videoMapping', {})
     if not video_url and video_mapping:
-        # Try various CDN mappings
         if video_mapping.get('mux'):
             mux = video_mapping['mux']
             if isinstance(mux, dict):
@@ -217,7 +263,7 @@ def extract_video_url(video_details: dict, parent_id: str = "", child_id: str = 
                 if video_url:
                     break
 
-    # 3. Try embedCode (extract iframe src)
+    # 3. Try embedCode
     if not video_url and video_details.get('embedCode'):
         embed = video_details['embedCode']
         src_match = re.search(r'src=["\'](.*?)["\']', embed)
@@ -231,15 +277,12 @@ def extract_video_url(video_details: dict, parent_id: str = "", child_id: str = 
                 video_url = video_details[key]
                 break
 
-    # ═══════════════════════════════════════════════════════════════
     # DRM / ClearKey Extraction
-    # ═══════════════════════════════════════════════════════════════
     drm_details = video_details.get('drmDetails') or video_details.get('drm') or {}
     if drm_details:
         drm_type = drm_details.get('drmType', '') or drm_details.get('type', '')
         if drm_type and str(drm_type).lower() == 'clearkey':
             keys_list = []
-            # Try various key formats
             if drm_details.get('keys'):
                 keys_list = drm_details['keys']
             elif drm_details.get('key_strings'):
@@ -250,7 +293,6 @@ def extract_video_url(video_details: dict, parent_id: str = "", child_id: str = 
                 keys_list = [f"{drm_details['kid']}:{drm_details['key']}"]
 
             if keys_list:
-                # Format keys nicely
                 formatted_keys = []
                 for k in keys_list:
                     if isinstance(k, str):
@@ -261,17 +303,94 @@ def extract_video_url(video_details: dict, parent_id: str = "", child_id: str = 
                 drm_key_str = ' | '.join(formatted_keys)
                 drm_info = f" | DRM: ClearKey | Key: {drm_key_str}"
 
-    # If video_url contains .mpd or .m3u8 but no protocol, add https
+    # Add protocol if missing
     if video_url and not video_url.startswith('http'):
         video_url = f"https:{video_url}"
 
-    # ═══════════════════════════════════════════════════════════════
-    # ADVANCED: Append parentId, childId, videoId to URL
-    # ═══════════════════════════════════════════════════════════════
+    # Append parentId, childId, videoId to URL
     if video_url and (parent_id or child_id or video_id):
         video_url = append_video_params(video_url, parent_id, child_id, video_id)
 
     return video_url, drm_info
+
+
+# ═══════════════════════════════════════════════════════════════
+# CRITICAL FIX: Deduplication by (URL + Title) pair
+# Same URL AND same title = duplicate => REMOVED
+# ═══════════════════════════════════════════════════════════════
+class ContentDeduplicator:
+    """
+    Advanced deduplicator that removes entries with the SAME URL AND SAME TITLE.
+    This prevents DPP notes from appearing twice.
+    
+    Logic:
+    - For each line "Title:URL", extract (normalized_url, normalized_title)
+    - If (url, title) pair was already seen, skip it
+    - This ensures unique content per URL+Title combination
+    """
+    def __init__(self):
+        self.seen = set()  # Set of (normalized_url, normalized_title) tuples
+    
+    def _normalize_url(self, url: str) -> str:
+        """Normalize URL for comparison"""
+        # Remove query params and trailing slashes
+        return url.split('?')[0].rstrip('/').lower()
+    
+    def _normalize_title(self, title: str) -> str:
+        """Normalize title for comparison"""
+        return title.strip().lower()
+    
+    def add_and_check_unique(self, line: str) -> bool:
+        """
+        Add entry and return True if unique, False if duplicate.
+        Line format: "Title:URL"
+        """
+        if ':' not in line:
+            # No colon = no URL, keep as-is if not seen
+            return True
+        
+        parts = line.split(':', 1)
+        title = self._normalize_title(parts[0])
+        url_part = parts[1].strip()
+        
+        # Extract just the URL part (remove DRM info etc.)
+        url = url_part
+        if ' | ' in url_part:
+            url = url_part.split(' | ')[0].strip()
+        
+        normalized_url = self._normalize_url(url)
+        key = (normalized_url, title)
+        
+        if key in self.seen:
+            return False  # Duplicate
+        
+        self.seen.add(key)
+        return True  # Unique
+    
+    def filter_unique(self, content_list: List[str]) -> List[str]:
+        """Filter a list of content lines, keeping only unique (URL+Title) entries."""
+        unique = []
+        for line in content_list:
+            if self.add_and_check_unique(line):
+                unique.append(line)
+        return unique
+    
+    def is_duplicate(self, title: str, url: str) -> bool:
+        """Check if a specific (title, url) pair is a duplicate."""
+        key = (self._normalize_url(url), self._normalize_title(title))
+        if key in self.seen:
+            return True
+        self.seen.add(key)
+        return False
+
+
+def deduplicate_by_url_and_title(content_list: List[str]) -> List[str]:
+    """
+    Remove duplicate entries based on BOTH URL AND TITLE.
+    This fixes DPP notes appearing twice.
+    """
+    dedup = ContentDeduplicator()
+    return dedup.filter_unique(content_list)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -297,138 +416,185 @@ async def fetch_pwwp_data(session: aiohttp.ClientSession, url: str, headers: Dic
 
 
 # ═══════════════════════════════════════════════════════════════
-# PW: Process chapter content (videos + notes + DPP) - ADVANCED
+# ADVANCED: Fetch content using schedule-details (FOR ALL BATCHES)
+# This approach uses schedule-details endpoint to extract proper video URLs
+# Works for BOTH purchased AND non-purchased batches
 # ═══════════════════════════════════════════════════════════════
-async def process_pwwp_chapter_content(session: aiohttp.ClientSession, chapter_id, selected_batch_id, subject_id, schedule_id, content_type, headers: Dict):
-    url = f"https://api.penpencil.co/v1/batches/{selected_batch_id}/subject/{subject_id}/schedule/{schedule_id}/schedule-details"
-    data = await fetch_pwwp_data(session, url, headers=headers)
-    content = []
+async def fetch_content_via_schedule_details(
+    session: aiohttp.ClientSession, 
+    batch_id: str, 
+    subject_id: str, 
+    topic_id: str, 
+    headers: Dict, 
+    content_type: str = "videos"
+) -> List[str]:
+    """
+    Fetch content list then get schedule-details for each to extract proper video URLs.
+    This is the KEY function that makes non-purchased batch videos work.
+    Based on pw(3).py working reference.
+    """
+    all_lines = []
+    dedup = ContentDeduplicator()
+    
+    try:
+        page = 1
+        while page <= 15:  # safety limit
+            url = f"https://api.penpencil.co/v3/batches/{batch_id}/subject/{subject_id}/contents"
+            params = {
+                "tag": topic_id,
+                "contentType": content_type,
+                "page": page
+            }
+            
+            data = await fetch_pwwp_data(session, url, headers=headers, params=params)
+            if not data:
+                break
+            
+            items = data.get("data", [])
+            if not items:
+                break
 
-    if data and data.get("success") and data.get("data"):
-        data_item = data["data"]
+            for item in items:
+                schedule_id = item.get("_id", "")
+                topic = item.get("topic", "Unknown").replace(":", "_").replace("/", "-")
 
-        # ─── VIDEOS ───
-        if content_type in ("videos", "DppVideos"):
-            video_details = data_item.get('videoDetails', {})
-            if video_details:
-                name = data_item.get('topic', '')
+                # Get schedule-details for PROPER video URL extraction
+                detail_url = f"https://api.penpencil.co/v3/batches/{batch_id}/subject/{subject_id}/schedule/{schedule_id}/schedule-details"
+                detail_data = await fetch_pwwp_data(session, detail_url, headers=headers)
                 
-                # ═══════════════════════════════════════════════════════════════
-                # ADVANCED: Extract parentId, childId, videoId
-                # ═══════════════════════════════════════════════════════════════
-                parent_id, child_id, video_id = extract_pw_ids(
-                    video_details=video_details,
-                    schedule_data=data_item,
-                    schedule_id=schedule_id,
-                    batch_id=selected_batch_id
-                )
+                if detail_data and detail_data.get("data"):
+                    detail_item = detail_data["data"]
+                    
+                    # ─── VIDEO EXTRACTION (works for ALL batches) ───
+                    if content_type in ('videos', 'DppVideos'):
+                        video_info = extract_video_data_from_schedule(detail_data)
+                        video_lines = format_video_line(topic, video_info)
+                        for vline in video_lines:
+                            if dedup.add_and_check_unique(vline):
+                                all_lines.append(vline)
+                        
+                        # Fallback: also try our comprehensive extractor
+                        if not video_lines:
+                            video_details = detail_item.get('videoDetails', {})
+                            parent_id, child_id, video_id = extract_pw_ids(
+                                video_details=video_details,
+                                schedule_data=detail_item,
+                                schedule_id=schedule_id,
+                                batch_id=batch_id
+                            )
+                            vurl, drm = extract_video_url(video_details, parent_id, child_id, video_id)
+                            if vurl:
+                                line = f"{topic}:{vurl}{drm}"
+                                if dedup.add_and_check_unique(line):
+                                    all_lines.append(line)
+                    
+                    # ─── NOTES / PDF EXTRACTION ───
+                    elif content_type in ('notes', 'DppNotes'):
+                        hw_ids = detail_item.get('homeworkIds', [])
+                        for hw in hw_ids:
+                            att_ids = hw.get('attachmentIds', [])
+                            hw_topic = hw.get('topic', topic).replace(":", "_").replace("/", "-")
+                            for att in att_ids:
+                                base_url = att.get('baseUrl', '')
+                                key = att.get('key', '')
+                                name = att.get('name', hw_topic).replace(":", "_").replace("/", "-")
+                                if base_url and key:
+                                    line = f"{name}:{base_url}{key}"
+                                    if dedup.add_and_check_unique(line):
+                                        all_lines.append(line)
+                        
+                        # Also check DPP homework
+                        dpp = detail_item.get('dpp')
+                        if dpp and content_type == 'DppNotes':
+                            dpp_homework_ids = dpp.get('homeworkIds', [])
+                            for hw in dpp_homework_ids:
+                                att_ids = hw.get('attachmentIds', [])
+                                hw_topic = hw.get('topic', topic).replace(":", "_").replace("/", "-")
+                                for att in att_ids:
+                                    base_url = att.get('baseUrl', '')
+                                    key = att.get('key', '')
+                                    name = att.get('name', hw_topic).replace(":", "_").replace("/", "-")
+                                    if base_url and key:
+                                        line = f"{name}:{base_url}{key}"
+                                        if dedup.add_and_check_unique(line):
+                                            all_lines.append(line)
                 
-                video_url, drm_info = extract_video_url(video_details, parent_id, child_id, video_id)
+                else:
+                    # Fallback: use basic URL from item if schedule-details fails
+                    basic_url = item.get('url', '')
+                    if basic_url and content_type in ('videos', 'DppVideos'):
+                        line = f"{topic}:{basic_url}"
+                        if dedup.add_and_check_unique(line):
+                            all_lines.append(line)
+                    # Also check homework from item
+                    for hw in item.get('homeworkIds', []):
+                        for att in hw.get('attachmentIds', []):
+                            name = att.get('name', topic).replace(":", "_").replace("/", "-")
+                            base_url = att.get('baseUrl', '')
+                            key = att.get('key', '')
+                            if key:
+                                line = f"{name}:{base_url}{key}"
+                                if dedup.add_and_check_unique(line):
+                                    all_lines.append(line)
 
-                if video_url:
-                    # Include DRM keys with the URL
-                    line = f"{name}:{video_url}{drm_info}"
-                    content.append(line)
-
-        # ─── NOTES (PDFs) ───
-        elif content_type in ("notes", "DppNotes"):
-            homework_ids = data_item.get('homeworkIds', [])
-            for homework in homework_ids:
-                attachment_ids = homework.get('attachmentIds', [])
-                name = homework.get('topic', '')
-                for attachment in attachment_ids:
-                    url = attachment.get('baseUrl', '') + attachment.get('key', '')
-                    if url:
-                        line = f"{name}:{url}"
-                        content.append(line)
-
-        return {content_type: content} if content else {}
-    else:
-        logging.warning(f"No Data Found For Id - {schedule_id}")
-        return {}
-
-
-async def fetch_pwwp_all_schedule(session: aiohttp.ClientSession, chapter_id, selected_batch_id, subject_id, content_type, headers: Dict) -> List[Dict]:
-    all_schedule = []
-    page = 1
-    while True:
-        params = {
-            'tag': chapter_id,
-            'contentType': content_type,
-            'page': page
-        }
-        url = f"https://api.penpencil.co/v2/batches/{selected_batch_id}/subject/{subject_id}/contents"
-        data = await fetch_pwwp_data(session, url, headers=headers, params=params)
-
-        if data and data.get("success") and data.get("data"):
-            for item in data["data"]:
-                item['content_type'] = content_type
-                all_schedule.append(item)
+            if not data.get("hasMore", True):
+                break
             page += 1
-        else:
-            break
-    return all_schedule
+
+    except Exception as e:
+        logging.exception(f"Error in fetch_content_via_schedule_details: {e}")
+
+    return all_lines
 
 
-async def process_pwwp_chapters(session: aiohttp.ClientSession, chapter_id, selected_batch_id, subject_id, headers: Dict):
-    content_types = ['videos', 'notes', 'DppNotes', 'DppVideos']
+# ═══════════════════════════════════════════════════════════════
+# PW: Process chapter content using ADVANCED schedule-details
+# ═══════════════════════════════════════════════════════════════
+async def process_pwwp_chapter_content_advanced(session, batch_id, subject_id, chapter_id, headers):
+    """Process a chapter's content using schedule-details approach (works for ALL batches)."""
+    combined_content = {
+        'videos': [],
+        'notes': [],
+        'DppNotes': [],
+        'DppVideos': []
+    }
     
-    all_schedule_tasks = [fetch_pwwp_all_schedule(session, chapter_id, selected_batch_id, subject_id, content_type, headers) for content_type in content_types]
-    all_schedules = await asyncio.gather(*all_schedule_tasks)
+    for content_type in ['videos', 'notes', 'DppNotes', 'DppVideos']:
+        lines = await fetch_content_via_schedule_details(
+            session, batch_id, subject_id, chapter_id, headers, content_type
+        )
+        if lines:
+            combined_content[content_type] = lines
     
-    all_schedule = []
-    for schedule in all_schedules:
-        all_schedule.extend(schedule)
-        
-    content_tasks = [
-        process_pwwp_chapter_content(session, chapter_id, selected_batch_id, subject_id, item["_id"], item['content_type'], headers)
-        for item in all_schedule
-    ]
-    content_results = await asyncio.gather(*content_tasks)
-
-    combined_content = {}
-    for result in content_results:
-        if result:
-            for content_type, content_list in result.items():
-                if content_type not in combined_content:
-                    combined_content[content_type] = []
-                combined_content[content_type].extend(content_list)
-
     return combined_content
 
 
-async def get_pwwp_all_chapters(session: aiohttp.ClientSession, selected_batch_id, subject_id, headers: Dict):
-    all_chapters = []
+async def process_pwwp_subject(session, subject, batch_id, batch_name, zipf, json_data, all_subject_urls, headers):
+    subject_name = subject.get("subject", "Unknown Subject").replace("/", "-")
+    subject_id = subject.get("_id")
+    json_data[batch_name][subject_name] = {}
+    zipf.writestr(f"{subject_name}/", "")
+    
+    # Get chapters
+    chapters = []
     page = 1
-    while True:
-        url = f"https://api.penpencil.co/v2/batches/{selected_batch_id}/subject/{subject_id}/topics?page={page}"
+    while page <= 20:
+        url = f"https://api.penpencil.co/v2/batches/{batch_id}/subject/{subject_id}/topics?page={page}"
         data = await fetch_pwwp_data(session, url, headers=headers)
-
         if data and data.get("data"):
-            chapters = data["data"]
-            all_chapters.extend(chapters)
+            chapters.extend(data["data"])
+            if len(data["data"]) < 20:
+                break
             page += 1
         else:
             break
-
-    return all_chapters
-
-
-async def process_pwwp_subject(session: aiohttp.ClientSession, subject: Dict, selected_batch_id: str, selected_batch_name: str, zipf: zipfile.ZipFile, json_data: Dict, all_subject_urls: Dict[str, List[str]], headers: Dict):
-    subject_name = subject.get("subject", "Unknown Subject").replace("/", "-")
-    subject_id = subject.get("_id")
-    json_data[selected_batch_name][subject_name] = {}
-    zipf.writestr(f"{subject_name}/", "")
-    
-    chapters = await get_pwwp_all_chapters(session, selected_batch_id, subject_id, headers)
     
     chapter_tasks = []
     for chapter in chapters:
         chapter_name = chapter.get("name", "Unknown Chapter").replace("/", "-")
         zipf.writestr(f"{subject_name}/{chapter_name}/", "")
-        json_data[selected_batch_name][subject_name][chapter_name] = {}
-
-        chapter_tasks.append(process_pwwp_chapters(session, chapter["_id"], selected_batch_id, subject_id, headers))
+        json_data[batch_name][subject_name][chapter_name] = {}
+        chapter_tasks.append(process_pwwp_chapter_content_advanced(session, batch_id, subject_id, chapter["_id"], headers))
 
     chapter_results = await asyncio.gather(*chapter_tasks)
 
@@ -442,8 +608,9 @@ async def process_pwwp_subject(session: aiohttp.ClientSession, subject: Dict, se
                 content.reverse()
                 content_string = "\n".join(content)
                 zipf.writestr(f"{subject_name}/{chapter_name}/{content_type}.txt", content_string.encode('utf-8'))
-                json_data[selected_batch_name][subject_name][chapter_name][content_type] = content
+                json_data[batch_name][subject_name][chapter_name][content_type] = content
                 all_urls.extend(content)
+    
     all_subject_urls[subject_name] = all_urls
 
 
@@ -468,89 +635,339 @@ def find_pw_old_batch(batch_search):
 
 
 # ═══════════════════════════════════════════════════════════════
-# PW: Today's Schedule Content (FIXED - with video DRM support + ADVANCED IDs)
+# ADVANCED: Fetch ALL batches using multiple endpoints
 # ═══════════════════════════════════════════════════════════════
-async def get_pwwp_todays_schedule_content_details(session: aiohttp.ClientSession, selected_batch_id, subject_id, schedule_id, headers: Dict) -> List[str]:
-    url = f"https://api.penpencil.co/v1/batches/{selected_batch_id}/subject/{subject_id}/schedule/{schedule_id}/schedule-details"
-    data = await fetch_pwwp_data(session, url, headers)
-    content = []
-
-    if data and data.get("success") and data.get("data"):
-        data_item = data["data"]
-        
-        # ─── VIDEO EXTRACTION (with ClearKey DRM + ADVANCED IDs) ───
-        video_details = data_item.get('videoDetails', {})
-        if video_details:
-            name = data_item.get('topic', '')
-            
-            # ═══════════════════════════════════════════════════════════════
-            # ADVANCED: Extract parentId, childId, videoId
-            # ═══════════════════════════════════════════════════════════════
-            parent_id, child_id, video_id = extract_pw_ids(
-                video_details=video_details,
-                schedule_data=data_item,
-                schedule_id=schedule_id,
-                batch_id=selected_batch_id
-            )
-            
-            video_url, drm_info = extract_video_url(video_details, parent_id, child_id, video_id)
-                
-            if video_url:
-                line = f"{name}:{video_url}{drm_info}\n"
-                content.append(line)
-               
-        # ─── HOMEWORK / NOTES (PDFs) ───          
-        homework_ids = data_item.get('homeworkIds', [])
-        for homework in homework_ids:
-            attachment_ids = homework.get('attachmentIds', [])
-            name = homework.get('topic', '')
-            for attachment in attachment_ids:
-                url = attachment.get('baseUrl', '') + attachment.get('key', '')
-                if url:
-                    line = f"{name}:{url}\n"
-                    content.append(line)
-                
-        # ─── DPP HOMEWORK ───
-        dpp = data_item.get('dpp')
-        if dpp:
-            dpp_homework_ids = dpp.get('homeworkIds', [])
-            for homework in dpp_homework_ids:
-                attachment_ids = homework.get('attachmentIds', [])
-                name = homework.get('topic', '')
-                for attachment in attachment_ids:
-                    url = attachment.get('baseUrl', '') + attachment.get('key', '')
-                    if url:
-                        line = f"{name}:{url}\n"
-                        content.append(line)
-    else:
-        logging.warning(f"No Data Found For Id - {schedule_id}")
-    return content
+async def fetch_all_pw_batches(session, headers, search_query=""):
+    """
+    Fetch ALL available PW batches from multiple sources:
+    1. my-batches (purchased + free)
+    2. all-purchased-batches
+    3. all-batches (explore)
+    4. search API (by name)
     
+    With a valid token, gives access to ALL batches.
+    """
+    all_batches = []
+    seen_ids = set()
+    
+    # 1. Get my-batches
+    try:
+        params = {
+            'mode': '1',
+            'filter': 'false',
+            'exam': '',
+            'amount': '',
+            'organisationId': '5eb393ee95fab7468a79d189',
+            'classes': '',
+            'limit': '100',
+            'page': '1',
+            'programId': '',
+            'ut': str(int(time.time() * 1000)),
+        }
+        url = "https://api.penpencil.co/v3/batches/my-batches"
+        data = await fetch_pwwp_data(session, url, headers=headers, params=params)
+        if data and data.get("data"):
+            for batch in data["data"]:
+                bid = batch.get("_id", "")
+                if bid and bid not in seen_ids:
+                    seen_ids.add(bid)
+                    all_batches.append(batch)
+    except Exception as e:
+        logging.warning(f"my-batches endpoint failed: {e}")
+    
+    # 2. all-purchased-batches
+    try:
+        params = {'mode': '1', 'page': '1'}
+        url = "https://api.penpencil.co/v3/batches/all-purchased-batches"
+        data = await fetch_pwwp_data(session, url, headers=headers, params=params)
+        if data and data.get("data"):
+            for batch in data["data"]:
+                bid = batch.get("_id", "")
+                if bid and bid not in seen_ids:
+                    seen_ids.add(bid)
+                    all_batches.append(batch)
+    except Exception as e:
+        logging.warning(f"all-purchased-batches endpoint failed: {e}")
+    
+    # 3. all-batches (explore endpoint - gives ALL batches)
+    try:
+        params = {'page': '1', 'limit': '100'}
+        url = "https://api.penpencil.co/v3/batches/all-batches"
+        data = await fetch_pwwp_data(session, url, headers=headers, params=params)
+        if data and data.get("data"):
+            explore_batches = data["data"]
+            if isinstance(explore_batches, dict):
+                explore_batches = explore_batches.get("data", [])
+            if isinstance(explore_batches, list):
+                for batch in explore_batches:
+                    bid = batch.get("_id", "")
+                    if bid and bid not in seen_ids:
+                        seen_ids.add(bid)
+                        all_batches.append(batch)
+    except Exception as e:
+        logging.warning(f"all-batches endpoint failed: {e}")
+    
+    # 4. Search API
+    if search_query:
+        try:
+            search_url = f"https://api.penpencil.co/v3/batches/search?name={search_query}"
+            search_data = await fetch_pwwp_data(session, search_url, headers=headers)
+            if search_data and search_data.get("data"):
+                search_results = search_data["data"]
+                if isinstance(search_results, dict):
+                    search_results = search_results.get("data", [])
+                if isinstance(search_results, list):
+                    for batch in search_results:
+                        bid = batch.get("_id", "")
+                        if bid and bid not in seen_ids:
+                            seen_ids.add(bid)
+                            all_batches.append(batch)
+        except Exception as e:
+            logging.warning(f"Search API failed: {e}")
+    
+    return all_batches
 
-async def get_pwwp_all_todays_schedule_content(session: aiohttp.ClientSession, selected_batch_id: str, headers: Dict) -> List[str]:
-    url = f"https://api.penpencil.co/v1/batches/{selected_batch_id}/todays-schedule"
-    todays_schedule_details = await fetch_pwwp_data(session, url, headers)
-    all_content = []
 
-    if todays_schedule_details and todays_schedule_details.get("success") and todays_schedule_details.get("data"):
-        tasks = []
+# ═══════════════════════════════════════════════════════════════
+# CALENDAR: Fetch scheduled classes for a SPECIFIC DATE
+# ═══════════════════════════════════════════════════════════════
+async def fetch_date_schedule(session, batch_id, target_date, headers):
+    """
+    Fetch scheduled classes for a specific date from PW calendar API.
+    Uses proper epoch-based date filtering.
+    target_date format: YYYY-MM-DD
+    """
+    all_schedules = []
+    try:
+        dt = datetime.strptime(target_date, "%Y-%m-%d")
+        start_dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+        start_epoch = int(start_dt.timestamp() * 1000)
+        end_epoch = int(end_dt.timestamp() * 1000)
 
-        for item in todays_schedule_details['data']:
-            schedule_id = item.get('_id')
-            subject_id = item.get('batchSubjectId')
+        # Try v3 schedule endpoint with proper date range
+        url = f"https://api.penpencil.co/v3/batches/{batch_id}/schedule"
+        params = {
+            "startDate": start_epoch,
+            "endDate": end_epoch,
+            "page": 1
+        }
+        data = await fetch_pwwp_data(session, url, headers=headers, params=params)
+        if data and data.get("success") and data.get("data"):
+            items = data["data"]
+            for item in items:
+                item["_source"] = "v3-schedule"
+            all_schedules.extend(items)
+
+        # Fallback: batch-contents endpoint
+        if not all_schedules:
+            url2 = f"https://api.penpencil.co/v3/batches/{batch_id}/batch-contents"
+            params2 = {
+                "startDate": start_epoch,
+                "endDate": end_epoch,
+                "page": 1
+            }
+            data2 = await fetch_pwwp_data(session, url2, headers=headers, params=params2)
+            if data2 and data2.get("success") and data2.get("data"):
+                items = data2["data"]
+                for item in items:
+                    item["_source"] = "v3-batch-contents"
+                all_schedules.extend(items)
+
+        # Filter to items matching target_date
+        filtered = []
+        for item in all_schedules:
+            item_date = item.get("date") or item.get("startTime") or item.get("scheduleDate") or ""
+            if target_date in str(item_date):
+                filtered.append(item)
+            elif not item_date:
+                filtered.append(item)
+
+        return filtered if filtered else all_schedules
+
+    except Exception as e:
+        logging.exception(f"Error in fetch_date_schedule: {e}")
+        return all_schedules
+
+
+# ═══════════════════════════════════════════════════════════════
+# CALENDAR: Process content for a specific date
+# ═══════════════════════════════════════════════════════════════
+async def process_date_content(session, batch_id, batch_name, target_date, headers, user_id):
+    """Process content extraction for a specific date."""
+    # Get batch details for subjects
+    detail_url = f"https://api.penpencil.co/v3/batches/{batch_id}/details"
+    batch_resp = await fetch_pwwp_data(session, detail_url, headers=headers)
+
+    if not batch_resp or not batch_resp.get("success"):
+        return None, None, 0, "Failed to fetch batch details"
+
+    subjects = batch_resp.get("data", {}).get("subjects", [])
+    if not subjects:
+        return None, None, 0, "No subjects found in batch"
+
+    # Fetch schedule for the date
+    schedules = await fetch_date_schedule(session, batch_id, target_date, headers)
+    if not schedules:
+        return None, None, 0, f"No classes scheduled for {target_date}"
+
+    # Build subject lookup
+    subject_map = {}
+    for subj in subjects:
+        sid = subj.get("_id")
+        sname = subj.get("subject", "Unknown").replace("/", "-")
+        subject_map[sid] = sname
+
+    # Process each scheduled item
+    all_urls = []
+    structured_data = {}
+    dedup = ContentDeduplicator()
+
+    clean_batch_name = batch_name.replace('/', '_').replace(':', '_').replace('|', '_').replace('?', '_')
+
+    for schedule_item in schedules:
+        # Extract subject_id
+        raw_subject = schedule_item.get("subject", "")
+        subject_id = ""
+        if isinstance(raw_subject, list) and raw_subject:
+            first = raw_subject[0]
+            subject_id = first.get("_id", "") if isinstance(first, dict) else str(first)
+        elif isinstance(raw_subject, dict):
+            subject_id = raw_subject.get("_id", "")
+        else:
+            subject_id = str(raw_subject) if raw_subject else ""
+
+        if not subject_id:
+            subject_id = schedule_item.get("subjectId", "") or schedule_item.get("batchSubjectId", "")
+
+        schedule_id = schedule_item.get("_id", "")
+        topic = schedule_item.get("topic", schedule_item.get("name", "Unknown Topic")).replace("/", "-").replace(":", "-")
+        start_time = schedule_item.get("startTime", schedule_item.get("startDate", ""))
+        end_time = schedule_item.get("endTime", schedule_item.get("endDate", ""))
+
+        subject_name = subject_map.get(subject_id, "")
+        if not subject_name:
+            if isinstance(raw_subject, dict):
+                subject_name = raw_subject.get("subject", raw_subject.get("name", ""))
+            if not subject_name:
+                subject_name = schedule_item.get("subjectName", "Unknown Subject")
+        subject_name = subject_name.replace("/", "-")
+
+        if subject_name not in structured_data:
+            structured_data[subject_name] = []
+
+        # Fetch schedule-details for video URL
+        video_lines = []
+        notes_lines = []
+
+        if subject_id and schedule_id:
+            detail_url = f"https://api.penpencil.co/v3/batches/{batch_id}/subject/{subject_id}/schedule/{schedule_id}/schedule-details"
+            detail_data = await fetch_pwwp_data(session, detail_url, headers=headers)
             
-            task = asyncio.create_task(get_pwwp_todays_schedule_content_details(session, selected_batch_id, subject_id, schedule_id, headers))
-            tasks.append(task)
-            
-        results = await asyncio.gather(*tasks)
-        
-        for result in results:
-            all_content.extend(result)
-            
-    else:
-        logging.warning("No today's schedule data found.")
+            if detail_data and detail_data.get("data"):
+                detail_item = detail_data["data"]
+                
+                # Extract video
+                video_info = extract_video_data_from_schedule(detail_data)
+                video_lines = format_video_line(topic, video_info)
+                
+                # Fallback comprehensive extractor
+                if not video_lines:
+                    video_details = detail_item.get('videoDetails', {})
+                    parent_id, child_id, vid = extract_pw_ids(
+                        video_details=video_details,
+                        schedule_data=detail_item,
+                        schedule_id=schedule_id,
+                        batch_id=batch_id
+                    )
+                    vurl, drm = extract_video_url(video_details, parent_id, child_id, vid)
+                    if vurl:
+                        video_lines.append(f"{topic}:{vurl}{drm}")
+                
+                # Extract notes
+                for hw in detail_item.get('homeworkIds', []):
+                    for att in hw.get('attachmentIds', []):
+                        name = att.get('name', topic).replace(":", "_").replace("/", "-")
+                        base_url = att.get('baseUrl', '')
+                        key = att.get('key', '')
+                        if base_url and key:
+                            notes_lines.append(f"{name}:{base_url}{key}")
 
-    return all_content
+        # Fallback: check if schedule item itself has URL
+        if not video_lines:
+            item_url = schedule_item.get('url', '')
+            if item_url:
+                video_lines.append(f"{topic}:{item_url}")
+
+        # Deduplicate
+        for vline in video_lines:
+            if dedup.add_and_check_unique(vline):
+                all_urls.append(vline)
+        for nline in notes_lines:
+            if dedup.add_and_check_unique(nline):
+                all_urls.append(nline)
+
+        structured_data[subject_name].append({
+            "topic": topic,
+            "start_time": start_time,
+            "end_time": end_time,
+            "videos": video_lines,
+            "notes": notes_lines
+        })
+
+    # === CREATE OUTPUT FILES ===
+    file_path_base = f"date_{target_date}_{clean_batch_name}"
+    
+    # 1. TXT file
+    txt_path = f"{file_path_base}.txt"
+    with open(txt_path, 'w', encoding='utf-8') as f:
+        f.write(f"=== {batch_name} - Classes for {target_date} ===\n\n")
+        for subject_name, items in structured_data.items():
+            f.write(f"\n--- {subject_name} ---\n")
+            for item in items:
+                f.write(f"\n📚 {item['topic']}\n")
+                f.write(f"⏰ {item['start_time']} - {item['end_time']}\n")
+                if item["videos"]:
+                    f.write("\n[Videos]\n")
+                    f.write("\n".join(item["videos"]) + "\n")
+                if item["notes"]:
+                    f.write("\n[Notes]\n")
+                    f.write("\n".join(item["notes"]) + "\n")
+
+    # 2. ZIP file
+    zip_path = f"{file_path_base}.zip"
+    with zipfile.ZipFile(zip_path, 'w') as zipf:
+        for subject_name, items in structured_data.items():
+            zipf.writestr(f"{subject_name}/", "")
+            for item in items:
+                topic = item["topic"]
+                time_slot = item["start_time"]
+                folder_name = f"{subject_name}/{topic}_{time_slot}"
+                
+                if item["videos"]:
+                    content_text = "\n".join(item["videos"])
+                    zipf.writestr(f"{folder_name}/videos.txt", content_text.encode('utf-8'))
+                if item["notes"]:
+                    content_text = "\n".join(item["notes"])
+                    zipf.writestr(f"{folder_name}/notes.txt", content_text.encode('utf-8'))
+
+    # 3. JSON file
+    json_path = f"{file_path_base}.json"
+    json_data = {batch_name: {}}
+    for subject_name, items in structured_data.items():
+        json_data[batch_name][subject_name] = {}
+        for item in items:
+            topic_key = f"{item['topic']} ({item['start_time']})"
+            json_data[batch_name][topic_key] = {
+                "videos": item["videos"],
+                "notes": item["notes"]
+            }
+    json_data[batch_name]["date"] = target_date
+    json_data[batch_name]["total_schedules"] = len(schedules)
+    with open(json_path, 'w') as f:
+        json.dump(json_data, f, indent=4)
+
+    return txt_path, zip_path, len(schedules), None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -559,14 +976,11 @@ async def get_pwwp_all_todays_schedule_content(session: aiohttp.ClientSession, s
 @bot.on_message(filters.command(["start"]))
 async def start(bot, message):
     random_image_url = random.choice(image_list)
-
     keyboard = [ 
         [InlineKeyboardButton("🚀 PHYSICS WALLAH 🚀 ", callback_data="pwwp")],
         [InlineKeyboardButton("🚀 CLASSPLUS APPS 🚀 ", callback_data="cpwp")]
     ]
-  
     reply_markup = InlineKeyboardMarkup(keyboard)
-
     await message.reply_photo(
         photo=random_image_url,
         caption="PLEASE PRESS HERE",
@@ -576,7 +990,7 @@ async def start(bot, message):
 
 
 # ═══════════════════════════════════════════════════════════════
-# BOT: PW Callback Handler (FIXED ThreadPool)
+# BOT: PW Callback Handler
 # ═══════════════════════════════════════════════════════════════
 def _run_async_in_thread(coro):
     """Helper to run async coroutine in ThreadPool"""
@@ -591,16 +1005,19 @@ async def pwwp_callback(bot, callback_query):
         await bot.send_message(callback_query.message.chat.id, "**You Are Not Subscribed To This Bot\nSo DM me for access\nID: @SmartBoy_ApnaMS**")
         return
         
-    # FIXED: Properly wrap async function for ThreadPool
     THREADPOOL.submit(_run_async_in_thread, process_pwwp(bot, callback_query.message, user_id))
 
 
 # ═══════════════════════════════════════════════════════════════
-# PW: Main Processing Function (Full Batch + Today's Class)
+# PW: Main Processing Function
 # ═══════════════════════════════════════════════════════════════
-async def process_pwwp(bot: Client, m: Message, user_id: int):
-
-    editable = await m.reply_text("**Enter Working Access Token\n\nOR\n\nEnter Phone Number\n\nNOTE: Jis Batch Ka Token hai uska Sara Content aayega with Videos & PDFs🚀, But Agar Us Batch ka Token nahi to Sirf Notes & DPP PDFs hi Milegi😒.**")
+async def process_pwwp(bot, m, user_id):
+    editable = await m.reply_text(
+        "**Enter Working Access Token\n\nOR\n\nEnter Phone Number\n\n"
+        "NOTE: Ab koi bhi valid PW token daalo, ALL batches ka content niklega "
+        "with Videos, PDFs & Video IDs!\n\n"
+        "NEW: Calendar Date Selection bhi available hai!**"
+    )
 
     try:
         input1 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
@@ -610,18 +1027,10 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
         await editable.edit("**Timeout! You took too long to respond😢.**")
         return
 
-    headers = {
-        'Host': 'api.penpencil.co',
-        'client-id': '5eb393ee95fab7468a79d189',
-        'client-version': '1910',
-        'user-agent': 'Mozilla/5.0 (Linux; Android 12; M2101K6P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Mobile Safari/537.36',
-        'randomid': '72012511-256c-4e1c-b4c7-29d67136af37',
-        'client-type': 'WEB',
-        'content-type': 'application/json; charset=utf-8',
-    }
-
+    headers = get_pw_mobile_headers("")
     loop = asyncio.get_event_loop()    
     CONNECTOR = aiohttp.TCPConnector(limit=1000, loop=loop)
+    
     async with aiohttp.ClientSession(connector=CONNECTOR, loop=loop) as session:
         try:
             if raw_text1.isdigit() and len(raw_text1) == 10:
@@ -632,9 +1041,10 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
                     "organizationId": "5eb393ee95fab7468a79d189"
                 }
                 try:
-                    async with session.post(f"https://api.penpencil.co/v1/users/get-otp?smsType=0", json=data, headers=headers) as response:
-                        await response.read()
-                    
+                    await session.post(
+                        f"https://api.penpencil.co/v1/users/get-otp?smsType=0",
+                        json=data, headers=get_pw_login_headers()
+                    )
                 except Exception as e:
                     await editable.edit(f"**Error : {e}**")
                     return
@@ -660,11 +1070,16 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
                 }
 
                 try:
-                    async with session.post(f"https://api.penpencil.co/v3/oauth/token", json=payload, headers=headers) as response:
+                    async with session.post(
+                        f"https://api.penpencil.co/v3/oauth/token",
+                        json=payload, headers=get_pw_login_headers()
+                    ) as response:
                         access_token = (await response.json())["data"]["access_token"]
-                        monster = await editable.edit(f"<b>Physics Wallah Login Successful </b>\n\n<pre language='Save this Login Token for future usage'>{access_token}</pre>\n\n")
-                        editable = await m.reply_text("**Getting Batches In Your I'd**")
-                    
+                        await editable.edit(
+                            f"<b>Physics Wallah Login Successful </b>\n\n"
+                            f"<pre language='Save this Login Token for future usage'>{access_token}</pre>\n\n"
+                        )
+                        editable = await m.reply_text("**Getting ALL Batches...**")
                 except Exception as e:
                     await editable.edit(f"**Error : {e}**")
                     return
@@ -672,21 +1087,34 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
             else:
                 access_token = raw_text1
             
-            headers['authorization'] = f"Bearer {access_token}"
+            headers = get_pw_mobile_headers(access_token)
         
-            params = {
-                'mode': '1',
-                'page': '1',
-            }
+            # Validate token
             try:
-                async with session.get(f"https://api.penpencil.co/v3/batches/all-purchased-batches", headers=headers, params=params) as response:
+                params = {'mode': '1', 'page': '1'}
+                async with session.get(
+                    f"https://api.penpencil.co/v3/batches/my-batches",
+                    headers=headers, params=params
+                ) as response:
                     response.raise_for_status()
-                    batches = (await response.json()).get("data", [])
+                    test_data = await response.json()
+                    if not test_data.get("data"):
+                        raise Exception("Invalid token")
             except Exception as e:
-                await editable.edit("**```\nLogin Failed TOKEN IS EXPIRED```\nPlease Enter Working Token\n                       OR\nLogin With Phone Number**")
+                await editable.edit(
+                    "**```\nLogin Failed TOKEN IS EXPIRED```\n"
+                    "Please Enter Working Token\n"
+                    "                       OR\n"
+                    "Login With Phone Number**"
+                )
                 return
         
-            await editable.edit("**Enter Your Batch Name\n\nRemeber Only Purchased Batch ke Videos hi aayenge Otherwise Sirf PDFs😐.**")
+            await editable.edit(
+                "**Enter Your Batch Name\n\n"
+                "Ab ALL batches milenge - purchased ho ya nahi! "
+                "Videos + PDFs dono!\n\n"
+                "Plus NEW Calendar Date Selection available!**"
+            )
             try:
                 input3 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
                 batch_search = input3.text
@@ -695,16 +1123,23 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
                 await editable.edit("**Timeout! You took too long to respond😢.**")
                 return
                 
-            url = f"https://api.penpencil.co/v3/batches/search?name={batch_search}"
-            courses = await fetch_pwwp_data(session, url, headers)
-            courses = courses.get("data", {}) if courses else {}
-
-            if courses:
+            # Fetch ALL batches from multiple sources
+            all_batches = await fetch_all_pw_batches(session, headers, batch_search)
+            
+            if all_batches:
                 text = ''
-                for cnt, course in enumerate(courses):
-                    name = course['name']
+                for cnt, course in enumerate(all_batches[:20]):
+                    name = course.get('name', 'Unknown')
                     text += f"{cnt + 1}. ```\n{name}```\n"
-                await editable.edit(f"**Send index number of the course to download.\n\n{text}\n\nIf Your Batch Not Listed Above Enter - No**")
+                
+                remaining = len(all_batches) - 20
+                if remaining > 0:
+                    text += f"\n...and {remaining} more batches."
+                
+                await editable.edit(
+                    f"**Send index number of the course to download.\n\n"
+                    f"{text}\n\nIf Your Batch Not Listed Above Enter - No**"
+                )
             
                 try:
                     input4 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
@@ -714,9 +1149,9 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
                     await editable.edit("**Timeout! You took too long to respond😢.**")
                     return
                 
-                if input4.text.isdigit() and 1 <= int(input4.text) <= len(courses):
+                if input4.text.isdigit() and 1 <= int(input4.text) <= len(all_batches):
                     selected_course_index = int(input4.text.strip())
-                    course = courses[selected_course_index - 1]
+                    course = all_batches[selected_course_index - 1]
                     selected_batch_id = course['_id']
                     selected_batch_name = course['name']
                     clean_batch_name = selected_batch_name.replace("/", "-").replace("|", "-")
@@ -749,10 +1184,20 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
                             clean_file_name = f"{user_id}_{clean_batch_name}"
                         else:
                             raise Exception("Invalid batch index.")
+                    else:
+                        raise Exception("No batches found for the given search name.")
                 else:
                     raise Exception("Invalid batch index.")
                     
-                await editable.edit("1.```\nFull Batch```\n2.```\nToday's Class```\n3.```\nKhazana```")
+                # ═══════════════════════════════════════════════════════════════
+                # MENU: 1.Full Batch | 2.Today Class | 3.Khazana | 4.Select Date
+                # ═══════════════════════════════════════════════════════════════
+                await editable.edit(
+                    "1.```\nFull Batch```\n"
+                    "2.```\nToday's Class```\n"
+                    "3.```\nKhazana```\n"
+                    "4.```\n📅 Select Date```"
+                )
                     
                 try:
                     input6 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
@@ -770,11 +1215,12 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
                     return
                         
                 await editable.edit(f"**Extracting course : {selected_batch_name} ...**")
-
                 start_time = time.time()
 
+                # ═══════════════════════════════════════════════════════════════
+                # OPTION 1: FULL BATCH
+                # ═══════════════════════════════════════════════════════════════
                 if input6.text == '1':
-                
                     url = f"https://api.penpencil.co/v3/batches/{selected_batch_id}/details"
                     batch_details = await fetch_pwwp_data(session, url, headers=headers)
 
@@ -785,8 +1231,10 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
                         all_subject_urls = {}
 
                         with zipfile.ZipFile(f"{clean_file_name}.zip", 'w') as zipf:
-                            
-                            subject_tasks = [process_pwwp_subject(session, subject, selected_batch_id, selected_batch_name, zipf, json_data, all_subject_urls, headers) for subject in subjects]
+                            subject_tasks = [
+                                process_pwwp_subject(session, subject, selected_batch_id, selected_batch_name, zipf, json_data, all_subject_urls, headers)
+                                for subject in subjects
+                            ]
                             await asyncio.gather(*subject_tasks)
                         
                         with open(f"{clean_file_name}.json", 'w') as f:
@@ -797,26 +1245,138 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
                                 subject_name = subject.get("subject", "Unknown Subject").replace("/", "-")
                                 if subject_name in all_subject_urls:
                                     f.write('\n'.join(all_subject_urls[subject_name]) + '\n')
-
                     else:
                         raise Exception(f"Error fetching batch details: {batch_details.get('message')}")
-                    
+                
+                # ═══════════════════════════════════════════════════════════════
+                # OPTION 2: TODAY'S CLASS
+                # ═══════════════════════════════════════════════════════════════
                 elif input6.text == '2':
-                    
                     selected_batch_name = "Today's Class"
-                    today_schedule = await get_pwwp_all_todays_schedule_content(session, selected_batch_id, headers)
-                    if today_schedule:
-                        with open(f"{clean_file_name}.txt", "w", encoding="utf-8") as f:
-                            f.writelines(today_schedule)
+                    today_str = datetime.now().strftime("%Y-%m-%d")
+                    
+                    txt_path, zip_path, total_schedules, error = await process_date_content(
+                        session, selected_batch_id, "Today's Class", today_str, headers, user_id
+                    )
+                    
+                    if error:
+                        raise Exception(error)
+                    
+                    if txt_path and os.path.exists(txt_path):
+                        clean_file_name = f"{user_id}_today_class"
+                        # Rename files to clean name
+                        for ext in ['txt', 'zip', 'json']:
+                            old = f"date_{today_str}_Today's Class.{ext}" if ext != 'txt' else txt_path
+                            if ext == 'txt':
+                                new_path = f"{clean_file_name}.{ext}"
+                                os.rename(txt_path, new_path)
+                            elif ext == 'zip' and zip_path:
+                                new_path = f"{clean_file_name}.{ext}"
+                                os.rename(zip_path, new_path)
                     else:
                         raise Exception("No Classes Found Today")
-                        
+                
+                # ═══════════════════════════════════════════════════════════════
+                # OPTION 3: KHAZANA
+                # ═══════════════════════════════════════════════════════════════
                 elif input6.text == '3':
                     raise Exception("Working In Progress")
+                
+                # ═══════════════════════════════════════════════════════════════
+                # OPTION 4: SELECT DATE (NEW CALENDAR FEATURE)
+                # ═══════════════════════════════════════════════════════════════
+                elif input6.text == '4':
+                    await editable.edit(
+                        "**📅 Select Date\n\n"
+                        "Send Date in format:\n"
+                        "DD-MM-YYYY\n\n"
+                        "Examples:\n"
+                        "```13-06-2026``` (for 13 June 2026)\n"
+                        "```05-07-2025``` (for 5 July 2025)\n"
+                        "```25-12-2024``` (for 25 December 2024)**"
+                    )
+                    
+                    try:
+                        input7 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
+                        date_input = input7.text.strip()
+                        await input7.delete(True)
+                    except:
+                        await editable.edit("**Timeout! You took too long to respond😢.**")
+                        return
+                    
+                    # Parse DD-MM-YYYY format
+                    try:
+                        date_obj = datetime.strptime(date_input, "%d-%m-%Y")
+                        target_date = date_obj.strftime("%Y-%m-%d")  # Convert to YYYY-MM-DD for API
+                        display_date = date_input  # Keep original DD-MM-YYYY for display
+                    except ValueError:
+                        await editable.edit(
+                            "**❌ Invalid Date Format!\n\n"
+                            "Please use DD-MM-YYYY format.\n"
+                            "Example: 13-06-2026**"
+                        )
+                        return
+                    
+                    await editable.edit(f"**📅 Fetching classes for {display_date}...**")
+                    
+                    txt_path, zip_path, total_schedules, error = await process_date_content(
+                        session, selected_batch_id, selected_batch_name, target_date, headers, user_id
+                    )
+                    
+                    if error:
+                        raise Exception(error)
+                    
+                    if txt_path and os.path.exists(txt_path):
+                        clean_file_name = f"{user_id}_date_{display_date}"
+                        # Rename files
+                        for ext in ['txt', 'zip', 'json']:
+                            src = f"date_{target_date}_{selected_batch_name.replace('/', '_').replace(':', '_').replace('|', '_').replace('?', '_')}.{ext}"
+                            if ext == 'txt':
+                                src = txt_path
+                            elif ext == 'zip':
+                                src = zip_path
+                            if os.path.exists(src):
+                                dst = f"{clean_file_name}.{ext}"
+                                os.rename(src, dst)
+                        
+                        end_time = time.time()
+                        response_time = end_time - start_time
+                        minutes = int(response_time // 60)
+                        seconds = int(response_time % 60)
+                        formatted_time = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
+                        
+                        video_count = sum(1 for f in [txt_path] if os.path.exists(str(f)))
+                        
+                        await editable.delete(True)
+                        
+                        caption = (
+                            f"**Batch Name : ```\n{selected_batch_name}```\n"
+                            f"📅 Date: {display_date}\n"
+                            f"📊 Total Classes: {total_schedules}\\n"
+                            f"Time Taken : {formatted_time}```**"
+                        )
+                        
+                        # Send files
+                        for ext in ['txt', 'zip', 'json']:
+                            fp = f"{clean_file_name}.{ext}"
+                            if os.path.exists(fp):
+                                with open(fp, 'rb') as f:
+                                    await m.reply_document(
+                                        document=f, 
+                                        caption=caption if ext == 'txt' else f"{selected_batch_name} - {ext.upper()}",
+                                        file_name=f"{selected_batch_name.replace('/', '-').replace('|', '-')}_{display_date}.{ext}"
+                                    )
+                                os.remove(fp)
+                        return  # Already sent files
+                    else:
+                        raise Exception(f"No content found for {display_date}")
                     
                 else:
                     raise Exception("Invalid index.")
                     
+                # ═══════════════════════════════════════════════════════════════
+                # Send output files (for options 1, 2)
+                # ═══════════════════════════════════════════════════════════════
                 end_time = time.time()
                 response_time = end_time - start_time
                 minutes = int(response_time // 60)
@@ -866,9 +1426,9 @@ async def process_pwwp(bot: Client, m: Message, user_id: int):
 
 
 # ═══════════════════════════════════════════════════════════════
-# CP (Classplus) Functions
+# CP (Classplus) Functions - UNCHANGED
 # ═══════════════════════════════════════════════════════════════
-async def fetch_cpwp_signed_url(url_val: str, name: str, session: aiohttp.ClientSession, headers: Dict[str, str]) -> str | None:
+async def fetch_cpwp_signed_url(url_val, name, session, headers):
     MAX_RETRIES = 3
     for attempt in range(MAX_RETRIES):
         params = {"url": url_val}
@@ -878,44 +1438,38 @@ async def fetch_cpwp_signed_url(url_val: str, name: str, session: aiohttp.Client
                 response_json = await response.json()
                 signed_url = response_json.get("url") or response_json.get('drmUrls', {}).get('manifestUrl')
                 return signed_url
-                
         except Exception as e:
             pass
-
         if attempt < MAX_RETRIES - 1:
             await asyncio.sleep(2 ** attempt)
-
     logging.error(f"Failed to fetch signed URL for {name} after {MAX_RETRIES} attempts.")
     return None
 
-async def process_cpwp_url(url_val: str, name: str, session: aiohttp.ClientSession, headers: Dict[str, str]) -> str | None:
+async def process_cpwp_url(url_val, name, session, headers):
     try:
         signed_url = await fetch_cpwp_signed_url(url_val, name, session, headers)
         if not signed_url:
             logging.warning(f"Failed to obtain signed URL for {name}: {url_val}")
             return None
-
         if "testbook.com" in url_val or "classplusapp.com/drm" in url_val or "media-cdn.classplusapp.com/drm" in url_val:
             return f"{name}:{url_val}\n"
-
         async with session.get(signed_url) as response:
             response.raise_for_status()
             return f"{name}:{url_val}\n"
-            
     except Exception as e:
         pass
     return None
 
 
-async def get_cpwp_course_content(session: aiohttp.ClientSession, headers: Dict[str, str], Batch_Token: str, folder_id: int = 0, limit: int = 9999999999, retry_count: int = 0) -> Tuple[List[str], int, int, int]:
+async def get_cpwp_course_content(session, headers, Batch_Token, folder_id=0, limit=9999999999, retry_count=0):
     MAX_RETRIES = 3
-    fetched_urls: set[str] = set()
-    results: List[str] = []
+    fetched_urls = set()
+    results = []
     video_count = 0
     pdf_count = 0
     image_count = 0
-    content_tasks: List[Tuple[int, asyncio.Task[str | None]]] = []
-    folder_tasks: List[Tuple[int, asyncio.Task[List[str]]]] = []
+    content_tasks = []
+    folder_tasks = []
 
     try:
         content_api = f'https://api.classplusapp.com/v2/course/preview/content/list/{Batch_Token}'
@@ -924,16 +1478,15 @@ async def get_cpwp_course_content(session: aiohttp.ClientSession, headers: Dict[
         async with session.get(content_api, params=params, headers=headers) as res:
             res.raise_for_status()
             res_json = await res.json()
-            contents: List[Dict[str, Any]] = res_json['data']
+            contents = res_json['data']
 
             for content in contents:
                 if content['contentType'] == 1:
                     folder_task = asyncio.create_task(get_cpwp_course_content(session, headers, Batch_Token, content['id'], retry_count=0))
                     folder_tasks.append((content['id'], folder_task))
-
                 else:
-                    name: str = content['name']
-                    url_val: str | None = content.get('url') or content.get('thumbnailUrl')
+                    name = content['name']
+                    url_val = content.get('url') or content.get('thumbnailUrl')
 
                     if not url_val:
                         logging.warning(f"No URL found for content: {name}")
@@ -964,13 +1517,12 @@ async def get_cpwp_course_content(session: aiohttp.ClientSession, headers: Dict[
 
                     if url_val.endswith(("master.m3u8", "playlist.m3u8")) and url_val not in fetched_urls:
                         fetched_urls.add(url_val)
-                        headers2 = { 'x-access-token': 'eyJjb3Vyc2VJZCI6IjQ1NjY4NyIsInR1dG9ySWQiOm51bGwsIm9yZ0lkIjo0ODA2MTksImNhdGVnb3J5SWQiOm51bGx9'}
+                        headers2 = {'x-access-token': 'eyJjb3Vyc2VJZCI6IjQ1NjY4NyIsInR1dG9ySWQiOm51bGwsIm9yZ0lkIjo0ODA2MTksImNhdGVnb3J5SWQiOm51bGx9'}
                         task = asyncio.create_task(process_cpwp_url(url_val, name, session, headers2))
                         content_tasks.append((content['id'], task))
-                        
                     else:
-                        name: str = content['name']
-                        url_val: str | None = content.get('url')
+                        name = content['name']
+                        url_val = content.get('url')
                         if url_val:
                             fetched_urls.add(url_val)
                             results.append(f"{name}:{url_val}\n")
@@ -1027,7 +1579,7 @@ async def cpwp_callback(bot, callback_query):
     THREADPOOL.submit(_run_async_in_thread, process_cpwp(bot, callback_query.message, user_id))
     
 
-async def process_cpwp(bot: Client, m: Message, user_id: int):
+async def process_cpwp(bot, m, user_id):
     
     headers = {
         'accept-encoding': 'gzip',
@@ -1157,7 +1709,6 @@ async def process_cpwp(bot: Client, m: Message, user_id: int):
                                                         logging.error(f"Failed to send error message to user : {e}")
                                                     return
 
-
                                                 if input3.text.isdigit() and len(input3.text) <= len(courses):
                                                     selected_course_index = int(input3.text.strip())
                                                     course = courses[selected_course_index - 1]
@@ -1166,7 +1717,6 @@ async def process_cpwp(bot: Client, m: Message, user_id: int):
                                                     price = course['finalPrice']
                                                     clean_batch_name = selected_batch_name.replace("/", "-").replace("|", "-")
                                                     clean_file_name = f"{user_id}_{clean_batch_name}"
-                                                
                                                 else:
                                                     raise Exception("Wrong Index Number")
                                             else:
