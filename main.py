@@ -1971,7 +1971,7 @@ async def get_pwwp_all_todays_schedule_content(session: aiohttp.ClientSession, s
 async def start(bot, message):
     random_image_url = random.choice(image_list)
     keyboard = [
-        [InlineKeyboardButton("🚀 PHYSICS WALLAH 🚀 ", callback_data="pwwp")],
+        [InlineKeyboardButton("🚀😁 PHYSICS WALLAH 🚀 ", callback_data="pwwp")],
         [InlineKeyboardButton("🚀 CLASSPLUS APPS 🚀 ", callback_data="cpwp")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
