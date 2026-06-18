@@ -75,17 +75,21 @@ print(4321)
 # ===============================================================
 HARDCODED_PW_BATCHES = [
     {
-        "batchId": "698adaafee5f29171102c9ca",
-        "type": "E_BATCH",
-        "name": "Yakeen NEET Hindi 2027",
-        "_id": "6a337b965244447b88218145"
-        "id": "6a337b965244447b88218145",
-        "subject": "Physics",
-        "subjectId": "5f709c351b999704b83cca8a"
-        "subject": "Zoology",
-        "subjectId": "60f66f13725eb9001895d101"
-        
-    },
+    "batchId": "698adaafee5f29171102c9ca",
+    "type": "E_BATCH",
+    "name": "Yakeen NEET Hindi 2027",
+    "_id": "6a337b96524447b88218145",
+    "subjects": [
+        {
+            "subject": "Physics",
+            "subjectId": "5f709c351b999704b83cca8a"
+        },
+        {
+            "subject": "Zoology",
+            "subjectId": "60f66f13725eb9001895d101"
+        }
+    ]
+},
     {
         "batchId": "69897f0ad7c19b7b2f7cc35f",
         "name": "Arjuna NEET 2027",
