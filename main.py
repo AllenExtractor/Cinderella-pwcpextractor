@@ -1532,19 +1532,20 @@ async def process_date_content(session, batch_id, batch_name, start_epoch, end_e
     file_path_base = f"date_{target_date}_{clean_batch_name}"
 
     # 1. TXT file
+    try:
+        display_date = "/".join(reversed(target_date.split("-")))
+    except Exception:
+        display_date = target_date
+
     txt_path = f"{file_path_base}.txt"
     with open(txt_path, 'w', encoding='utf-8') as f:
-        f.write(f"=== {batch_name} - Classes for {target_date} ===\n\n")
+        f.write(f"Date of Content- {display_date}\n")
         for subject_name, items in structured_data.items():
-            f.write(f"\n--- {subject_name} ---\n")
+            f.write(f"{subject_name}\n")
             for item in items:
-                f.write(f"\nTopic: {item['topic']}\n")
-                f.write(f"Time: {item['start_time']}\n")
                 if item["videos"]:
-                    f.write("\n[Videos]\n")
                     f.write("\n".join(item["videos"]) + "\n")
                 if item["notes"]:
-                    f.write("\n[Notes]\n")
                     f.write("\n".join(item["notes"]) + "\n")
 
     # 2. ZIP file
