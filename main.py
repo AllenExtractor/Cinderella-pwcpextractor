@@ -112,17 +112,33 @@ image_list = [
 ]
 print(4321)
 
-# ── Thumbnail used for every .txt file we send ───────────────────────────────
-TXT_THUMB_URL = "https://graph.org/file/3caf2c3b92e388a67861e-cdfd456f0fb1187140.jpg"
-TXT_THUMB_PATH = "txt_thumb.jpg"
-try:
-    if not os.path.exists(TXT_THUMB_PATH):
-        _thumb_resp = requests.get(TXT_THUMB_URL, timeout=15)
-        if _thumb_resp.status_code == 200:
-            with open(TXT_THUMB_PATH, "wb") as _tf:
-                _tf.write(_thumb_resp.content)
-except Exception as _e:
-    logging.warning(f"Could not download txt thumbnail: {_e}")
+# ── Thumbnail for all document files (persistent, survives restarts) ────────
+THUMB_URL = "https://graph.org/file/3caf2c3b92e388a67861e-cdfd456f0fb1187140.jpg"
+THUMB_PATH = "document_thumb.jpg"
+
+def ensure_thumbnail_exists():
+    """Ensure thumbnail file exists, download if needed."""
+    try:
+        if not os.path.exists(THUMB_PATH):
+            logging.info(f"Downloading thumbnail from {THUMB_URL}...")
+            resp = requests.get(THUMB_URL, timeout=10)
+            if resp.status_code == 200:
+                with open(THUMB_PATH, "wb") as f:
+                    f.write(resp.content)
+                logging.info(f"Thumbnail saved to {THUMB_PATH}")
+                return THUMB_PATH
+            else:
+                logging.warning(f"Failed to download thumbnail: status {resp.status_code}")
+                return None
+        else:
+            logging.info(f"Thumbnail already exists at {THUMB_PATH}")
+            return THUMB_PATH
+    except Exception as e:
+        logging.error(f"Thumbnail error: {e}")
+        return None
+
+# Ensure thumbnail is ready when bot starts
+THUMBNAIL_FILE = ensure_thumbnail_exists()
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -683,21 +699,26 @@ def deduplicate_by_url_and_title(content_list: List[str]) -> List[str]:
 async def log_extraction_to_channel(bot, user_id, user_name, user_username, batch_name, token_preview, file_types):
     """Log extraction details to private log channel."""
     try:
-        if LOG_CHANNEL <= 0:
-            return  # Log channel not configured
+        if not LOG_CHANNEL or LOG_CHANNEL <= 0:
+            logging.warning(f"Log channel not configured (value: {LOG_CHANNEL})")
+            return
         
         log_text = (
             f"📊 **Extraction Logged**\n\n"
             f"👤 User ID: `{user_id}`\n"
             f"👤 Name: {user_name or 'N/A'}\n"
-            f"👤 Username: {user_username or 'N/A'}\n"
+            f"👤 Username: @{user_username if user_username else 'N/A'}\n"
             f"📚 Batch: `{batch_name}`\n"
             f"🔐 Token: `{token_preview}`\n"
-            f"📄 Files: {', '.join(file_types)}"
+            f"📄 Files: {', '.join(file_types)}\n"
+            f"⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
         )
-        await bot.send_message(LOG_CHANNEL, log_text)
+        
+        logging.info(f"Attempting to log to channel {LOG_CHANNEL}: {log_text[:50]}...")
+        result = await bot.send_message(LOG_CHANNEL, log_text, parse_mode="markdown")
+        logging.info(f"Successfully logged extraction to channel {LOG_CHANNEL}")
     except Exception as e:
-        logging.warning(f"Could not log extraction: {e}")
+        logging.error(f"Failed to log extraction to channel {LOG_CHANNEL}: {e}", exc_info=True)
 
 
 # ===============================================================
@@ -2425,26 +2446,52 @@ async def process_pwwp(bot, m, user_id):
 
                     # Send files for option 4: only txt + html
                     files_to_send = ['txt', 'html']
-                    for ext in files_to_send:
-                        if ext == 'html':
-                            # Generate HTML from txt content
-                            with open(f"{clean_file_name}.txt", 'r', encoding='utf-8') as f:
-                                txt_content = f.read()
-                            html_data = {selected_batch_name: {"Schedule": {"Classes": [{"title": line.split(':')[0], "url": line.split(':')[1].strip()} for line in txt_content.strip().split('\n') if ':' in line]}}}
-                            html_content = generate_html_from_json(selected_batch_name, html_data, access_token)
-                            with open(f"{clean_file_name}.html", 'w', encoding='utf-8') as f:
-                                f.write(html_content)
+                    
+                    # Generate HTML from txt content for calendar
+                    try:
+                        with open(f"{clean_file_name}.txt", 'r', encoding='utf-8') as f:
+                            txt_content = f.read()
                         
+                        items = []
+                        for line in txt_content.strip().split('\n'):
+                            if ':' in line:
+                                parts = line.split(':', 1)
+                                items.append({
+                                    "title": parts[0].strip(),
+                                    "url": parts[1].strip(),
+                                    "type": "video" if any(ext in parts[1].lower() for ext in ['.mpd', '.m3u8']) else "file"
+                                })
+                        
+                        html_data = {selected_batch_name: {"Schedule": {"Items": items}}}
+                        logging.info(f"Generating HTML for calendar {target_date} ({len(items)} items)")
+                        html_content = generate_html_from_json(selected_batch_name, html_data, access_token)
+                        with open(f"{clean_file_name}.html", 'w', encoding='utf-8') as f:
+                            f.write(html_content)
+                        logging.info(f"HTML file created for calendar: {clean_file_name}.html")
+                    except Exception as e:
+                        logging.error(f"Could not generate HTML for calendar: {e}", exc_info=True)
+                    
+                    # Send the files
+                    for ext in files_to_send:
                         fp = f"{clean_file_name}.{ext}"
                         if os.path.exists(fp):
-                            with open(fp, 'rb') as f:
-                                await m.reply_document(
-                                    document=f,
-                                    caption=caption if ext == 'txt' else f"{selected_batch_name} - Study Page",
-                                    file_name=f"{selected_batch_name.replace('/', '-').replace('|', '-')}.{ext}",
-                                    thumb=TXT_THUMB_PATH if os.path.exists(TXT_THUMB_PATH) else None
-                                )
-                            os.remove(fp)
+                            try:
+                                with open(fp, 'rb') as f:
+                                    await m.reply_document(
+                                        document=f,
+                                        caption=caption if ext == 'txt' else f"{selected_batch_name} - Study Page",
+                                        file_name=f"{selected_batch_name.replace('/', '-').replace('|', '-')}.{ext}",
+                                        thumb=THUMBNAIL_FILE
+                                    )
+                                logging.info(f"Sent {ext} file to user")
+                            except Exception as e:
+                                logging.error(f"Error sending {ext} file: {e}", exc_info=True)
+                            finally:
+                                try:
+                                    os.remove(fp)
+                                except:
+                                    pass
+                            
                             if ext == 'txt':
                                 await m.reply_text(f"**DONE ✅ I shared File {selected_batch_name}**")
                     
@@ -2466,28 +2513,47 @@ async def process_pwwp(bot, m, user_id):
             
             # Generate HTML from JSON if it exists
             html_generated = False
-            if os.path.exists(f"{clean_file_name}.json"):
-                try:
-                    with open(f"{clean_file_name}.json", 'r', encoding='utf-8') as f:
-                        json_data = json.load(f)
-                    html_content = generate_html_from_json(selected_batch_name, json_data, access_token)
-                    with open(f"{clean_file_name}.html", 'w', encoding='utf-8') as f:
-                        f.write(html_content)
-                    html_generated = True
-                except Exception as e:
-                    logging.warning(f"Could not generate HTML: {e}")
-            elif os.path.exists(f"{clean_file_name}.txt"):
-                # For today's class, generate simple HTML from txt
-                try:
-                    with open(f"{clean_file_name}.txt", 'r', encoding='utf-8') as f:
-                        txt_content = f.read()
-                    html_data = {selected_batch_name: {"Classes": {"Today": [{"title": line.split(':')[0], "url": line.split(':')[1].strip()} for line in txt_content.strip().split('\n') if ':' in line]}}}
-                    html_content = generate_html_from_json(selected_batch_name, html_data, access_token)
-                    with open(f"{clean_file_name}.html", 'w', encoding='utf-8') as f:
-                        f.write(html_content)
-                    html_generated = True
-                except Exception as e:
-                    logging.warning(f"Could not generate HTML from txt: {e}")
+            try:
+                if os.path.exists(f"{clean_file_name}.json"):
+                    try:
+                        with open(f"{clean_file_name}.json", 'r', encoding='utf-8') as f:
+                            json_data = json.load(f)
+                        logging.info(f"Generating HTML from JSON for {selected_batch_name}")
+                        html_content = generate_html_from_json(selected_batch_name, json_data, access_token)
+                        with open(f"{clean_file_name}.html", 'w', encoding='utf-8') as f:
+                            f.write(html_content)
+                        logging.info(f"HTML file created: {clean_file_name}.html")
+                        html_generated = True
+                    except Exception as e:
+                        logging.error(f"Error generating HTML from JSON: {e}", exc_info=True)
+                elif os.path.exists(f"{clean_file_name}.txt"):
+                    # For today's class, generate simple HTML from txt
+                    try:
+                        with open(f"{clean_file_name}.txt", 'r', encoding='utf-8') as f:
+                            txt_content = f.read()
+                        
+                        # Parse txt content into structured data
+                        items = []
+                        for line in txt_content.strip().split('\n'):
+                            if ':' in line:
+                                parts = line.split(':', 1)
+                                items.append({
+                                    "title": parts[0].strip(),
+                                    "url": parts[1].strip(),
+                                    "type": "video" if any(ext in parts[1].lower() for ext in ['.mpd', '.m3u8']) else "file"
+                                })
+                        
+                        html_data = {selected_batch_name: {"Content": {"Items": items}}}
+                        logging.info(f"Generating HTML from txt for {selected_batch_name} ({len(items)} items)")
+                        html_content = generate_html_from_json(selected_batch_name, html_data, access_token)
+                        with open(f"{clean_file_name}.html", 'w', encoding='utf-8') as f:
+                            f.write(html_content)
+                        logging.info(f"HTML file created from txt: {clean_file_name}.html")
+                        html_generated = True
+                    except Exception as e:
+                        logging.error(f"Error generating HTML from txt: {e}", exc_info=True)
+            except Exception as e:
+                logging.error(f"Unexpected error in HTML generation: {e}", exc_info=True)
             
             # Determine which files to send
             if os.path.exists(f"{clean_file_name}.zip"):
