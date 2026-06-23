@@ -866,7 +866,7 @@ async def log_extraction_to_channel(bot, user_id, user_name, user_username, batc
             f"⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
         )
 
-        logging.info(f"Attempting to log to channel {LOG_CHANNEL}: {log_text[:50]}...")
+        logging.info(f"Attempting to log to channel {LOG_CHANNEL}: {log_text}...")
         try:
             await bot.send_message(LOG_CHANNEL, log_text, parse_mode=ParseMode.MARKDOWN)
             logging.info(f"Successfully logged extraction to channel {LOG_CHANNEL}")
