@@ -3468,7 +3468,7 @@ async def process_pwwp(bot, m, user_id):
             # MENU: 1.Full Batch | 2.Today Class | 3.Khazana | 4.Select Date
             # ==========================================================
             await editable.edit(
-                "You Selected {selected_batch_name} for\n"
+                f"You Choosed Batch\n**{selected_batch_name}**\n\n"
                 "1.```\nFull Batch```\n"
                 "2.```\nToday's Class```\n"
                 "3.```\nKhazana```\n"
