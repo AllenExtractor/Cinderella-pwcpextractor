@@ -861,7 +861,7 @@ async def log_extraction_to_channel(bot, user_id, user_name, user_username, batc
             f"👤 Name: {user_name or 'N/A'}\n"
             f"👤 Username: @{user_username if user_username else 'N/A'}\n"
             f"📚 Batch: `{batch_name}`\n"
-            f"🔐 Token: `{access_token}`\n"
+            f"🔐 Token: `{token_preview}`\n"
             f"📄 Files: {', '.join(file_types)}\n"
             f"⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}"
         )
