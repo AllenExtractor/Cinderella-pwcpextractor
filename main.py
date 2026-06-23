@@ -3067,7 +3067,7 @@ async def start(bot, message):
     random_image_url = random.choice(image_list)
     keyboard = [
         [InlineKeyboardButton("🕺PHYSICS WALLAH🕺", callback_data="pwwp")],
-        [InlineKeyboardButton("🔍Join Channel", url="https://t.me/teamcinderella")]
+        [InlineKeyboardButton("😋Join Channel", url="https://t.me/teamcinderella")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await message.reply_photo(
@@ -3179,7 +3179,7 @@ async def pwwp_callback(bot, callback_query):
     await callback_query.answer()
 
     if user_id not in auth_users:
-        await bot.send_message(callback_query.message.chat.id, "**You Are Not Subscribed To This Bot\nSo DM me for access\nID: @SmartBoy_ApnaMS**")
+        await bot.send_message(callback_query.message.chat.id, "**You Are Not Subscribed To This Bot\nSo DM me for access\nID: @JapaneseFury**")
         return
 
     THREADPOOL.submit(_run_async_in_thread, process_pwwp(bot, callback_query.message, user_id))
@@ -3209,7 +3209,7 @@ async def batch_next_callback(bot, callback_query):
         _, text = get_batches_for_page(user_id, new_page)
         keyboard = build_batch_pagination_keyboard(user_id, new_page)
 
-        header = f"**Send index number of the course to download.\n\n{text}\n\nIf Your Batch Not Listed Above Enter contact: @SmartBoy_ApnaMS**"
+        header = f"**Send index number of the course to download.\n\n{text}\n\nIf Your Batch Not Listed Above Enter contact: @JapaneseFury**"
         try:
             await callback_query.message.edit_text(header, reply_markup=keyboard)
         except Exception as e:
@@ -3235,7 +3235,7 @@ async def batch_prev_callback(bot, callback_query):
         _, text = get_batches_for_page(user_id, new_page)
         keyboard = build_batch_pagination_keyboard(user_id, new_page)
 
-        header = f"**Send index number of the course to download.\n\n{text}\n\nIf Your Batch Not Listed Above Contact: @SmartBoy_ApnaMS**"
+        header = f"**Send index number of the course to download.\n\n{text}\n\nIf Your Batch Not Listed Above Contact: @JapaneseFury**"
         try:
             await callback_query.message.edit_text(header, reply_markup=keyboard)
         except Exception as e:
@@ -3316,7 +3316,7 @@ async def process_pwwp(bot, m, user_id):
                     ) as response:
                         access_token = (await response.json())["data"]["access_token"]
                         await editable.edit(
-                            f"<b>🤩Physics Wallah Login Successfully✅</b>\n\n"
+                            f"<b>✅Please Renew Token From: @pwextract_bot(New Duplicate token). </b>\n\n"
                             f"<pre language='Save this Login Token for future usage'>{access_token}</pre>\n\n"
                         )
                         editable = await m.reply_text("**Getting ALL Batches...\n\nPlease Wait...🤭**")
@@ -3352,7 +3352,7 @@ async def process_pwwp(bot, m, user_id):
 
             if direct_token_login:
                 await editable.edit(
-                    f"<b>😘Physics Wallah Login Successfully✅</b>\n\n"
+                    f"<b>✅Please Renew Token From: @pwextract_bot(New Duplicate token).</b>\n\n"
                     f"<pre language='Save this Login Token for future usage'>{access_token}</pre>\n\n"
                 )
                 editable = await m.reply_text("**Getting ALL Batches...\n\nPlease Wait...🤭**")
@@ -3760,7 +3760,7 @@ async def process_pwwp(bot, m, user_id):
 
             await editable.delete(True)
 
-            caption = f"**Batch Name : ```\n{selected_batch_name}``````\nTime Taken : {formatted_time}```\n\nExtracted By: @SmartBoy_ApnaMS**"
+            caption = f"**Batch Name : ```\n{selected_batch_name}``````\nTime Taken : {formatted_time}```\n\nExtracted By: @JapaneseFury**"
 
             # Send files and capture message IDs for log channel forwarding
             sent_message_ids = []
