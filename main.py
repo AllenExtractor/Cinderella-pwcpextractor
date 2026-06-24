@@ -4134,23 +4134,24 @@ async def testextract_command(bot, m: Message):
         await m.reply_text("**❌ Unauthorized. Use /start to login first.**")
         return
 
-    # Get stored token
-    pw_api_data = {}
+    editable = await m.reply_text(
+        "**🔬 Test Extract**\n\n"
+        "Apna PW Token paste karo:"
+    )
+
     try:
-        if os.path.exists("pw_api.json"):
-            with open("pw_api.json", "r") as f:
-                pw_api_data = json.load(f)
-    except Exception:
-        pass
+        input_token = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
+        token = input_token.text.strip()
+        await input_token.delete(True)
+    except:
+        await editable.edit("**Timeout! Please respond within 120 seconds.**")
+        return
 
-    token = pw_api_data.get(str(user_id), {}).get("token", "") if isinstance(pw_api_data.get(str(user_id)), dict) else pw_api_data.get(str(user_id), "")
-
-    if not token:
-        await m.reply_text("**❌ Token not found. Use /start → PW → login first.**")
+    if not token or len(token) < 50:
+        await editable.edit("**❌ Invalid token. Please try again.**")
         return
 
     headers = get_pw_mobile_headers(token)
-    editable = await m.reply_text("**🔬 Test Extract Starting...**\n\nFetching videos from Physics - गणितीय उपकरण chapter...")
 
     start_time = time.time()
     results = []
