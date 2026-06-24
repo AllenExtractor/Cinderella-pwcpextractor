@@ -4049,6 +4049,186 @@ async def process_pwwp(bot, m, user_id):
 
 
 # ===============================================================
+# TEST EXTRACT: Direct ID-based extraction for purchased batch
+# Uses hardcoded IDs from captured API responses
+# Command: /testextract
+# ===============================================================
+
+# ── Hardcoded IDs from captured API responses ──
+TEST_BATCH_ID    = "698adaafee5f29171102c9ca"   # Yakeen NEET Hindi 2027
+TEST_SUBJECT_ID  = "699f15c8fb58aa8dd7fa6d75"   # Physics (batch-subject _id)
+TEST_SUBJECT_NAME = "Physics"
+
+# Schedule IDs from contents API (Physics - गणितीय उपकरण chapter)
+# Each tuple: (schedule_id, video_details_id, topic_name, date)
+TEST_SCHEDULE_ITEMS = [
+    ("6a0eb8aecdc6d9c1ca28b3e7", "6a1fb99034849e969fc5b505", "गणितीय उपकरण 10 : समाकलन",         "2026-06-03"),
+    ("6a0eb8aecdc6d9c1ca28b3dd", "6a1e68bf0739a7245244da77", "गणितीय उपकरण 09 : अवकलन (PART-02)", "2026-06-02"),
+    ("6a1956cc442cb2e7995439a3", "6a1d17cc22ae1b2c68530795", "गणितीय उपकरण 08 : अवकलन",           "2026-06-01"),
+    ("6a0eb8aecdc6d9c1ca28b3b4", "6a1921bcdb60baf8f3df5798", "गणितीय उपकरण 07 : समान्तर व गुणोतर", "2026-05-29"),
+    ("6a15d0b3763f1eec952e95e7", "6a167ed2036736484a6b309e", "गणितीय उपकरण 06 : ग्राफ (PART-02)", "2026-05-27"),
+    ("6a0eb8aecdc6d9c1ca28b3b2", "6a152f0634235869c7f83695", "गणितीय उपकरण 05 : ग्राफ",           "2026-05-26"),
+    ("6a0eb8aecdc6d9c1ca28b3b1", "6a13dcd4634e55e83b0a501e", "गणितीय उपकरण 04 : त्रिकोणमिति",     "2026-05-25"),
+    ("6a0d66f1cdb16e5898a588e0", "6a0fe8bdbe1f26af2d1f061a", "गणितीय उपकरण 03 : गणितीय उपकरण",   "2026-05-22"),
+    ("6a0c2c67110881cbb2d73577", "6a0eb2dd7718bf04cf440877", "गणितीय उपकरण 02 : त्रिकोणमिति",     "2026-05-21"),
+    # Free lecture — URL already in contents response, no schedule-details needed
+    ("6a0d44d108f9cdcf7294e1d0", "6a0d47efcac4a07399942605", "गणितीय उपकरण 01 : गणितीय उपकरण",   "2026-05-20"),
+]
+
+# Direct URL for the free lecture (isFree=true, URL exposed in contents API)
+FREE_LECTURE_URL = "https://d1d34p8vz63oiq.cloudfront.net/b0efc9b9-6531-4ba4-a8c9-1bb905755792/master.mpd"
+
+
+async def extract_single_schedule_video(session, batch_id, subject_id, schedule_id, video_details_id, topic, headers):
+    """
+    Fetch schedule-details for ONE schedule item and extract video URL.
+    Tries v1 first (confirmed working for full batch), then v3.
+    Returns a formatted line string or None.
+    """
+    for api_version in ["v1", "v3"]:
+        try:
+            url = f"https://api.penpencil.co/v{api_version[-1]}/batches/{batch_id}/subject/{subject_id}/schedule/{schedule_id}/schedule-details"
+            data = await fetch_pwwp_data(session, url, headers=headers)
+            if not data or not data.get("data"):
+                continue
+
+            detail_item = data["data"]
+            video_details = detail_item.get("videoDetails", {})
+
+            # Extract IDs for URL params
+            parent_id, child_id, vid = extract_pw_ids(
+                video_details=video_details,
+                schedule_data=detail_item,
+                schedule_id=schedule_id,
+                batch_id=batch_id
+            )
+
+            # Method 1: Comprehensive extractor
+            vurl, drm = extract_comprehensive_video_url(video_details, parent_id, child_id, vid)
+            if vurl:
+                return f"{topic}:{vurl}{drm}"
+
+            # Method 2: extract_video_data_from_schedule fallback
+            video_info = extract_video_data_from_schedule(data)
+            lines = format_video_line(topic, video_info, parent_id, child_id, vid)
+            if lines:
+                return lines[0]
+
+        except Exception as e:
+            logging.warning(f"schedule-details {api_version} failed for {schedule_id}: {e}")
+            continue
+
+    return None
+
+
+@bot.on_message(filters.command("testextract") & filters.private)
+async def testextract_command(bot, m: Message):
+    """
+    Test command: extract videos from hardcoded Physics chapter IDs
+    of Yakeen NEET Hindi 2027 batch using the user's token.
+    """
+    user_id = m.from_user.id
+
+    # Check auth
+    if user_id not in _load_auth_users():
+        await m.reply_text("**❌ Unauthorized. Use /start to login first.**")
+        return
+
+    # Get stored token
+    pw_api_data = {}
+    try:
+        if os.path.exists("pw_api.json"):
+            with open("pw_api.json", "r") as f:
+                pw_api_data = json.load(f)
+    except Exception:
+        pass
+
+    token = pw_api_data.get(str(user_id), {}).get("token", "") if isinstance(pw_api_data.get(str(user_id)), dict) else pw_api_data.get(str(user_id), "")
+
+    if not token:
+        await m.reply_text("**❌ Token not found. Use /start → PW → login first.**")
+        return
+
+    headers = get_pw_mobile_headers(token)
+    editable = await m.reply_text("**🔬 Test Extract Starting...**\n\nFetching videos from Physics - गणितीय उपकरण chapter...")
+
+    start_time = time.time()
+    results = []
+    failed = []
+
+    loop = asyncio.get_event_loop()
+    connector = aiohttp.TCPConnector(limit=10, loop=loop)
+
+    async with aiohttp.ClientSession(connector=connector, loop=loop) as session:
+
+        # Free lecture — URL already known, no API call needed
+        free_item = TEST_SCHEDULE_ITEMS[-1]
+        results.append(f"{free_item[2]} [FREE]:{FREE_LECTURE_URL}&parentId={TEST_BATCH_ID}&childId={free_item[0]}&videoId={free_item[1]}")
+
+        # Purchased lectures — fetch schedule-details for each
+        await editable.edit(
+            f"**🔬 Test Extract Running...**\n\n"
+            f"Fetching {len(TEST_SCHEDULE_ITEMS) - 1} purchased lecture URLs...\n"
+            f"Batch: Yakeen NEET Hindi 2027\n"
+            f"Subject: {TEST_SUBJECT_NAME}"
+        )
+
+        tasks = []
+        for schedule_id, video_details_id, topic, date in TEST_SCHEDULE_ITEMS[:-1]:
+            tasks.append(extract_single_schedule_video(
+                session, TEST_BATCH_ID, TEST_SUBJECT_ID,
+                schedule_id, video_details_id, topic, headers
+            ))
+
+        task_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for i, (result, item) in enumerate(zip(task_results, TEST_SCHEDULE_ITEMS[:-1])):
+            schedule_id, video_details_id, topic, date = item
+            if isinstance(result, Exception) or result is None:
+                failed.append(f"❌ {topic} ({date})")
+            else:
+                results.append(result)
+
+    # Build output file
+    elapsed = int(time.time() - start_time)
+    output_lines = [
+        f"# Test Extract — Yakeen NEET Hindi 2027",
+        f"# Subject: Physics — गणितीय उपकरण",
+        f"# Total: {len(results)} videos extracted, {len(failed)} failed",
+        f"# Time: {elapsed}s",
+        f"",
+    ] + results
+
+    if failed:
+        output_lines += ["", "# FAILED:"] + failed
+
+    output_text = "\n".join(output_lines)
+    filename = f"testextract_{user_id}_physics.txt"
+
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(output_text)
+
+    await editable.delete()
+
+    caption = (
+        f"**🔬 Test Extract Complete**\n\n"
+        f"Batch: `Yakeen NEET Hindi 2027`\n"
+        f"Subject: `Physics — गणितीय उपकरण`\n"
+        f"✅ Videos extracted: `{len(results)}`\n"
+        f"❌ Failed: `{len(failed)}`\n"
+        f"⏱ Time: `{elapsed}s`"
+    )
+
+    with open(filename, "rb") as f:
+        await m.reply_document(document=f, caption=caption, file_name=filename)
+
+    try:
+        os.remove(filename)
+    except Exception:
+        pass
+
+
+# ===============================================================
 # START: Flask + Bot
 # ===============================================================
 if __name__ == "__main__":
