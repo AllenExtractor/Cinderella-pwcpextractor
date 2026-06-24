@@ -4083,8 +4083,10 @@ async def extract_single_schedule_video(session, batch_id, subject_id, schedule_
     """
     Fetch schedule-details for ONE schedule item and extract video URL.
     Tries v1 first (confirmed working for full batch), then v3.
+    Added: Fallback to contents API for non-purchased batches (test mode).
     Returns a formatted line string or None.
     """
+    # ── Existing: Try schedule-details API (v1, then v3) ──
     for api_version in ["v1", "v3"]:
         try:
             url = f"https://api.penpencil.co/v{api_version[-1]}/batches/{batch_id}/subject/{subject_id}/schedule/{schedule_id}/schedule-details"
@@ -4117,6 +4119,34 @@ async def extract_single_schedule_video(session, batch_id, subject_id, schedule_
         except Exception as e:
             logging.warning(f"schedule-details {api_version} failed for {schedule_id}: {e}")
             continue
+
+    # ── NEW: Test-mode fallback — contents API for non-purchased batches ──
+    try:
+        contents_url = f"https://api.penpencil.co/v3/batches/{batch_id}/subject/{subject_id}/contents"
+        params = {
+            "page": "1",
+            "limit": "100",
+            "contentType": "videos",
+            "tag": "",
+            "sortBy": "DATE"
+        }
+        async with session.get(contents_url, headers=headers, params=params, timeout=15) as resp:
+            if resp.status == 200:
+                contents_data = await resp.json()
+                items = contents_data.get("data", []) if contents_data else []
+                for item in items:
+                    # Match by schedule _id
+                    if item.get("_id") == schedule_id:
+                        vd = item.get("videoDetails", {})
+                        # Try all possible URL fields in videoDetails
+                        for key in ["url", "videoUrl", "baseUrl", "manifestUrl", "mpdUrl"]:
+                            vurl = vd.get(key)
+                            if vurl and isinstance(vurl, str) and vurl.startswith("http"):
+                                vid = vd.get("_id", video_details_id)
+                                return f"{topic}:{vurl}&parentId={batch_id}&childId={schedule_id}&videoId={vid}"
+                        break
+    except Exception as e:
+        logging.warning(f"Contents fallback failed for {schedule_id}: {e}")
 
     return None
 
