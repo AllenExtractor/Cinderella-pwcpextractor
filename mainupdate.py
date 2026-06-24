@@ -2526,6 +2526,208 @@ async def fetch_all_pw_batches(session, headers, search_query=""):
 
 
 # ===============================================================
+# ADVANCED: Extract ALL Accessible Batches (Security Demo Mode)
+# Uses one token to extract ALL accessible batches' content
+# ===============================================================
+async def extract_all_accessible_batches(session, headers, m, editable, user_id, access_token, start_time):
+    """
+    Extract ALL batches accessible with a single token.
+    Demonstrates security weakness: one purchased token = multiple batches access.
+
+    Features:
+    - Rate limiting (5s delay between batches)
+    - Safety cap (max 10 batches to avoid PW blocking)
+    - Reuses existing proven extraction logic (process_pwwp_subject)
+    - Sends files per-batch immediately (no memory bloat)
+    """
+    await editable.edit(
+        "**🔓 ALL BATCHES EXTRACTION MODE\n\n"
+        "Fetching all accessible batches with your token...\n"
+        "Please Wait...🤭**"
+    )
+
+    # Fetch all accessible batches (uses existing function)
+    all_batches = await fetch_all_pw_batches(session, headers)
+    if not all_batches:
+        await editable.edit("**❌ Koi batch nahi mila is token se.**")
+        return False
+
+    total_found = len(all_batches)
+    # Safety cap: pehle 10 batches (rate limit ke liye)
+    batches_to_process = all_batches[:10]
+
+    await editable.edit(
+        f"**🔓 {total_found} batches accessible mila.\n"
+        f"⏳ Pehle {len(batches_to_process)} batches extract kar raha hu\n"
+        f"(Safety limit: 10 batches max per run)\n\n"
+        f"Extraction shuru...**"
+    )
+
+    success_count = 0
+    fail_count = 0
+    all_sent_message_ids = []
+
+    for idx, batch in enumerate(batches_to_process):
+        batch_id = batch.get("_id", "")
+        batch_name = batch.get("name", "Unknown Batch")
+        clean_batch_name = batch_name.replace("/", "-").replace("|", "-")
+        clean_file_name = f"{user_id}_allbatch_{idx+1}_{clean_batch_name.replace(chr(32), '_')}"
+
+        status_msg = await m.reply_text(
+            f"**[{idx+1}/{len(batches_to_process)}] Processing: `{batch_name}`\n\n"
+            f"⏳ Fetching batch details...**"
+        )
+
+        try:
+            # Step 1: Fetch batch details (same as Option 1 logic)
+            batch_details = None
+            for bid, label in [(batch_id, "_id"), (batch.get("batchId"), "batchId")]:
+                if not bid:
+                    continue
+                try:
+                    url = f"https://api.penpencil.co/v3/batches/{bid}/details"
+                    batch_details = await fetch_pwwp_data(session, url, headers=headers)
+                    if batch_details and batch_details.get("success"):
+                        logging.info(f"[AllBatches] Batch details fetched using {label}={bid}")
+                        break
+                except Exception as e:
+                    logging.warning(f"[AllBatches] Batch details failed with {label}={bid}: {e}")
+
+            if not batch_details or not batch_details.get("success"):
+                await status_msg.edit_text(f"**[{idx+1}/{len(batches_to_process)}] ❌ `{batch_name}` — Batch details fetch failed, skipping.**")
+                fail_count += 1
+                continue
+
+            subjects = batch_details.get("data", {}).get("subjects", [])
+            if not subjects:
+                await status_msg.edit_text(f"**[{idx+1}/{len(batches_to_process)}] ❌ `{batch_name}` — No subjects found, skipping.**")
+                fail_count += 1
+                continue
+
+            await status_msg.edit_text(
+                f"**[{idx+1}/{len(batches_to_process)}] ⏳ `{batch_name}`\n"
+                f"📚 {len(subjects)} subjects found. Extracting content...**"
+            )
+
+            # Step 2: Process all subjects (reuse existing process_pwwp_subject)
+            json_data = {batch_name: {}}
+            all_subject_urls = {}
+
+            with zipfile.ZipFile(f"{clean_file_name}.zip", 'w') as zipf:
+                subject_tasks = [
+                    process_pwwp_subject(session, subject, batch_id, batch_name, zipf, json_data, all_subject_urls, headers)
+                    for subject in subjects
+                ]
+                await asyncio.gather(*subject_tasks)
+
+            # Step 3: Create JSON file
+            with open(f"{clean_file_name}.json", 'w') as f:
+                json.dump(json_data, f, indent=4)
+
+            # Step 4: Create TXT file
+            with open(f"{clean_file_name}.txt", 'w', encoding='utf-8') as f:
+                for subject in subjects:
+                    subject_name = safe_topic(subject.get("subject"), "Unknown Subject")
+                    if subject_name in all_subject_urls:
+                        f.write('\n'.join(all_subject_urls[subject_name]) + '\n')
+
+            # Step 5: Generate HTML
+            try:
+                with open(f"{clean_file_name}.json", 'r', encoding='utf-8') as f:
+                    json_data_read = json.load(f)
+                html_content = generate_html_from_json(batch_name, json_data_read, access_token)
+                with open(f"{clean_file_name}.html", 'w', encoding='utf-8') as f:
+                    f.write(html_content)
+            except Exception as e:
+                logging.error(f"[AllBatches] HTML generation failed for {batch_name}: {e}", exc_info=True)
+
+            # Step 6: Send files to user
+            end_time = time.time()
+            response_time = end_time - start_time
+            minutes = int(response_time // 60)
+            seconds = int(response_time % 60)
+            if minutes == 0:
+                formatted_time = f"{seconds}s" if seconds >= 1 else f"{response_time:.2f}s"
+            else:
+                formatted_time = f"{minutes}m {seconds}s"
+
+            caption = (
+                f"**[{idx+1}/{len(batches_to_process)}] Batch: `{batch_name}`\n"
+                f"📚 Subjects: {len(subjects)}\n"
+                f"⏱ Time Taken: {formatted_time}\n"
+                f"🔓 Extracted By: @JapaneseFury**"
+            )
+
+            files_to_send = ["txt", "zip", "json", "html"]
+            batch_sent_ids = []
+
+            for ext in files_to_send:
+                fp = f"{clean_file_name}.{ext}"
+                if os.path.exists(fp):
+                    try:
+                        with open(fp, 'rb') as f:
+                            doc = await m.reply_document(
+                                document=f,
+                                caption=caption if ext == "txt" else f"{batch_name} - {ext.upper() if ext != 'html' else 'Study Page'}",
+                                file_name=f"{clean_batch_name}.{ext}",
+                                thumb=await get_thumbnail_async()
+                            )
+                            batch_sent_ids.append(doc.id)
+                        if ext == "txt":
+                            done_msg = await m.reply_text(f"**✅ [{idx+1}/{len(batches_to_process)}] `{batch_name}` — DONE!**")
+                            batch_sent_ids.append(done_msg.id)
+                    except Exception as e:
+                        logging.exception(f"[AllBatches] Error sending {ext} for {batch_name}: {e}")
+                    finally:
+                        try:
+                            os.remove(fp)
+                        except OSError:
+                            pass
+
+            all_sent_message_ids.extend(batch_sent_ids)
+            success_count += 1
+
+            await status_msg.edit_text(f"**[{idx+1}/{len(batches_to_process)}] ✅ `{batch_name}` — Complete!**")
+
+            # Rate limiting: 5 second delay between batches
+            if idx < len(batches_to_process) - 1:
+                await m.reply_text(f"**⏳ Rate limit protection: 5s delay before next batch...**")
+                await asyncio.sleep(5)
+
+        except Exception as e:
+            logging.exception(f"[AllBatches] Error processing batch {batch_name}: {e}")
+            await status_msg.edit_text(f"**[{idx+1}/{len(batches_to_process)}] ❌ `{batch_name}` — Error: {str(e)[:100]}**")
+            fail_count += 1
+            continue
+
+    # Final summary
+    await editable.delete(True)
+    summary = (
+        f"**🔓 ALL BATCHES EXTRACTION COMPLETE\n\n"
+        f"📊 Total Accessible: {total_found}\n"
+        f"✅ Successfully Extracted: {success_count}\n"
+        f"❌ Failed: {fail_count}\n"
+        f"⏭ Skipped (safety limit): {max(0, total_found - 10)}\n\n"
+        f"⚠️ Note: Pehle 10 batches hi extract kiye (rate limit safety).\n"
+        f"Aur chahiye toh dobara /start karo.**"
+    )
+    summary_msg = await m.reply_text(summary)
+    all_sent_message_ids.append(summary_msg.id)
+
+    # Log to log channel
+    try:
+        user_info = await bot.get_chat(user_id)
+        await log_extraction_to_channel(
+            bot, user_id, user_info.first_name, user_info.username,
+            f"ALL_BATCHES ({success_count}/{total_found})", access_token[:20] + "...",
+            ["txt", "zip", "json", "html"], all_sent_message_ids, m.chat.id
+        )
+    except Exception as e:
+        logging.warning(f"[AllBatches] Could not log extraction: {e}")
+
+    return True
+
+# ===============================================================
 # PAGINATION: Build inline keyboard for batch selection
 # ===============================================================
 def build_batch_pagination_keyboard(user_id: int, page: int) -> InlineKeyboardMarkup:
@@ -3554,9 +3756,10 @@ async def process_pwwp(bot, m, user_id):
             await editable.edit(
                 f"You Choosed Batch\n**{selected_batch_name}**\n\n"
                 "1.```\nFull Batch```\n"
-                "2.```\nToday's Class```\n"
+                "2.```\nToday\'s Class```\n"
                 "3.```\nKhazana```\n"
-                "4.```\n📅 Select Date```"
+                "4.```\n📅 Select Date```\n"
+                "5.```\n🔓 ALL Accessible Batches```"
             )
 
             try:
@@ -3921,6 +4124,143 @@ async def process_pwwp(bot, m, user_id):
                         await editable.edit(f"**⚠️ No content found for {disp_date}**")
                         return
 
+            # ==========================================================
+            # OPTION 5: ALL ACCESSIBLE BATCHES (Security Demo Mode)
+            # Uses one token to extract ALL accessible batches
+            # Rate limited: 5s delay between batches, max 10 batches
+            # ==========================================================
+            elif input6.text == '5':
+                await editable.edit(
+                    "**🔓 ALL BATCHES EXTRACTION STARTING...\n\n"
+                    "Ek token se sab accessible batches nikaal rahe hain...\n"
+                    "Yeh security weakness demonstrate karne ke liye hai.\n\n"
+                    "⏳ Please Wait...**"
+                )
+
+                all_batches = await fetch_all_pw_batches(session, headers)
+                if not all_batches:
+                    await editable.edit("**❌ Koi batch nahi mila.**")
+                    return
+
+                await editable.edit(f"**🔓 {len(all_batches)} batches found. Extraction shuru...**")
+
+                success_count = 0
+                for idx, batch in enumerate(all_batches[:10]):  # Safety: pehle 10 batches
+                    batch_id = batch.get("_id")
+                    batch_name = batch.get("name", "Unknown")
+
+                    await m.reply_text(f"**[{idx+1}/{len(all_batches[:10])}] Processing: `{batch_name}`**")
+
+                    try:
+                        # Fetch batch details
+                        details = await fetch_pwwp_data(
+                            session, 
+                            f"https://api.penpencil.co/v3/batches/{batch_id}/details", 
+                            headers=headers
+                        )
+                        if not details or not details.get("success"):
+                            await m.reply_text(f"**[{idx+1}] ❌ `{batch_name}` — details failed**")
+                            continue
+
+                        subjects = details.get("data", {}).get("subjects", [])
+                        if not subjects:
+                            await m.reply_text(f"**[{idx+1}] ❌ `{batch_name}` — no subjects**")
+                            continue
+
+                        # Process batch using existing Full Batch logic
+                        clean_batch_name = batch_name.replace("/", "-").replace("|", "-")
+                        clean_file_name = f"{user_id}_allbatch_{idx+1}"
+
+                        json_data = {batch_name: {}}
+                        all_subject_urls = {}
+
+                        with zipfile.ZipFile(f"{clean_file_name}.zip", 'w') as zipf:
+                            subject_tasks = [
+                                process_pwwp_subject(session, subject, batch_id, batch_name, zipf, json_data, all_subject_urls, headers)
+                                for subject in subjects
+                            ]
+                            await asyncio.gather(*subject_tasks)
+
+                        with open(f"{clean_file_name}.json", 'w') as f:
+                            json.dump(json_data, f, indent=4)
+
+                        with open(f"{clean_file_name}.txt", 'w', encoding='utf-8') as f:
+                            for subject in subjects:
+                                subject_name = safe_topic(subject.get("subject"), "Unknown Subject")
+                                if subject_name in all_subject_urls:
+                                    f.write('\n'.join(all_subject_urls[subject_name]) + '\n')
+
+                        # Generate HTML
+                        try:
+                            with open(f"{clean_file_name}.json", 'r', encoding='utf-8') as f:
+                                json_data_read = json.load(f)
+                            html_content = generate_html_from_json(batch_name, json_data_read, access_token)
+                            with open(f"{clean_file_name}.html", 'w', encoding='utf-8') as f:
+                                f.write(html_content)
+                        except Exception as e:
+                            logging.error(f"[Option5] HTML generation failed for {batch_name}: {e}", exc_info=True)
+
+                        # Send files
+                        end_time = time.time()
+                        response_time = end_time - start_time
+                        minutes = int(response_time // 60)
+                        seconds = int(response_time % 60)
+                        if minutes == 0:
+                            formatted_time = f"{seconds}s" if seconds >= 1 else f"{response_time:.2f}s"
+                        else:
+                            formatted_time = f"{minutes}m {seconds}s"
+
+                        caption = (
+                            f"**[{idx+1}/{len(all_batches[:10])}] Batch: `{batch_name}`\n"
+                            f"📚 Subjects: {len(subjects)}\n"
+                            f"⏱ Time Taken: {formatted_time}\n"
+                            f"🔓 Extracted By: @JapaneseFury**"
+                        )
+
+                        files_to_send = ["txt", "zip", "json", "html"]
+                        for ext in files_to_send:
+                            fp = f"{clean_file_name}.{ext}"
+                            if os.path.exists(fp):
+                                try:
+                                    with open(fp, 'rb') as f:
+                                        await m.reply_document(
+                                            document=f,
+                                            caption=caption if ext == "txt" else f"{batch_name} - {ext.upper() if ext != 'html' else 'Study Page'}",
+                                            file_name=f"{clean_batch_name}.{ext}",
+                                            thumb=await get_thumbnail_async()
+                                        )
+                                    if ext == "txt":
+                                        await m.reply_text(f"**✅ [{idx+1}] `{batch_name}` — DONE!**")
+                                except Exception as e:
+                                    logging.exception(f"[Option5] Error sending {ext} for {batch_name}: {e}")
+                                finally:
+                                    try:
+                                        os.remove(fp)
+                                    except OSError:
+                                        pass
+
+                        success_count += 1
+
+                    except Exception as e:
+                        logging.exception(f"[Option5] Error processing batch {batch_name}: {e}")
+                        await m.reply_text(f"**[{idx+1}] ❌ `{batch_name}` — Error: {str(e)[:100]}**")
+
+                    # Rate limit: 5 second delay between batches
+                    if idx < len(all_batches[:10]) - 1:
+                        await asyncio.sleep(5)
+
+                await editable.delete(True)
+                await m.reply_text(
+                    f"**🔓 ALL BATCHES EXTRACTION COMPLETE\n\n"
+                    f"✅ Successful: {success_count}\n"
+                    f"❌ Failed: {len(all_batches[:10]) - success_count}\n"
+                    f"📊 Total Accessible: {len(all_batches)}\n"
+                    f"⏭ Skipped (safety): {max(0, len(all_batches) - 10)}\n\n"
+                    f"⚠️ Rate limit safety: sirf 10 batches.\n"
+                    f"Aur chahiye toh dobara /start karo.**"
+                )
+                return
+
             else:
                 raise Exception("Invalid index.")
 
@@ -4046,217 +4386,6 @@ async def process_pwwp(bot, m, user_id):
             if session:
                 await session.close()
             await CONNECTOR.close()
-
-
-# ===============================================================
-# TEST EXTRACT: Direct ID-based extraction for purchased batch
-# Uses hardcoded IDs from captured API responses
-# Command: /testextract
-# ===============================================================
-
-# ── Hardcoded IDs from captured API responses ──
-TEST_BATCH_ID    = "698adaafee5f29171102c9ca"   # Yakeen NEET Hindi 2027
-TEST_SUBJECT_ID  = "699f15c8fb58aa8dd7fa6d75"   # Physics (batch-subject _id)
-TEST_SUBJECT_NAME = "Physics"
-
-# Schedule IDs from contents API (Physics - गणितीय उपकरण chapter)
-# Each tuple: (schedule_id, video_details_id, topic_name, date)
-TEST_SCHEDULE_ITEMS = [
-    ("6a0eb8aecdc6d9c1ca28b3e7", "6a1fb99034849e969fc5b505", "गणितीय उपकरण 10 : समाकलन",         "2026-06-03"),
-    ("6a0eb8aecdc6d9c1ca28b3dd", "6a1e68bf0739a7245244da77", "गणितीय उपकरण 09 : अवकलन (PART-02)", "2026-06-02"),
-    ("6a1956cc442cb2e7995439a3", "6a1d17cc22ae1b2c68530795", "गणितीय उपकरण 08 : अवकलन",           "2026-06-01"),
-    ("6a0eb8aecdc6d9c1ca28b3b4", "6a1921bcdb60baf8f3df5798", "गणितीय उपकरण 07 : समान्तर व गुणोतर", "2026-05-29"),
-    ("6a15d0b3763f1eec952e95e7", "6a167ed2036736484a6b309e", "गणितीय उपकरण 06 : ग्राफ (PART-02)", "2026-05-27"),
-    ("6a0eb8aecdc6d9c1ca28b3b2", "6a152f0634235869c7f83695", "गणितीय उपकरण 05 : ग्राफ",           "2026-05-26"),
-    ("6a0eb8aecdc6d9c1ca28b3b1", "6a13dcd4634e55e83b0a501e", "गणितीय उपकरण 04 : त्रिकोणमिति",     "2026-05-25"),
-    ("6a0d66f1cdb16e5898a588e0", "6a0fe8bdbe1f26af2d1f061a", "गणितीय उपकरण 03 : गणितीय उपकरण",   "2026-05-22"),
-    ("6a0c2c67110881cbb2d73577", "6a0eb2dd7718bf04cf440877", "गणितीय उपकरण 02 : त्रिकोणमिति",     "2026-05-21"),
-    # Free lecture — URL already in contents response, no schedule-details needed
-    ("6a0d44d108f9cdcf7294e1d0", "6a0d47efcac4a07399942605", "गणितीय उपकरण 01 : गणितीय उपकरण",   "2026-05-20"),
-]
-
-# Direct URL for the free lecture (isFree=true, URL exposed in contents API)
-FREE_LECTURE_URL = "https://d1d34p8vz63oiq.cloudfront.net/b0efc9b9-6531-4ba4-a8c9-1bb905755792/master.mpd"
-
-
-async def extract_single_schedule_video(session, batch_id, subject_id, schedule_id, video_details_id, topic, headers):
-    """
-    Fetch schedule-details for ONE schedule item and extract video URL.
-    Tries v1 first (confirmed working for full batch), then v3.
-    Added: Fallback to contents API for non-purchased batches (test mode).
-    Returns a formatted line string or None.
-    """
-    # ── Existing: Try schedule-details API (v1, then v3) ──
-    for api_version in ["v1", "v3"]:
-        try:
-            url = f"https://api.penpencil.co/v{api_version[-1]}/batches/{batch_id}/subject/{subject_id}/schedule/{schedule_id}/schedule-details"
-            data = await fetch_pwwp_data(session, url, headers=headers)
-            if not data or not data.get("data"):
-                continue
-
-            detail_item = data["data"]
-            video_details = detail_item.get("videoDetails", {})
-
-            # Extract IDs for URL params
-            parent_id, child_id, vid = extract_pw_ids(
-                video_details=video_details,
-                schedule_data=detail_item,
-                schedule_id=schedule_id,
-                batch_id=batch_id
-            )
-
-            # Method 1: Comprehensive extractor
-            vurl, drm = extract_comprehensive_video_url(video_details, parent_id, child_id, vid)
-            if vurl:
-                return f"{topic}:{vurl}{drm}"
-
-            # Method 2: extract_video_data_from_schedule fallback
-            video_info = extract_video_data_from_schedule(data)
-            lines = format_video_line(topic, video_info, parent_id, child_id, vid)
-            if lines:
-                return lines[0]
-
-        except Exception as e:
-            logging.warning(f"schedule-details {api_version} failed for {schedule_id}: {e}")
-            continue
-
-    # ── NEW: Test-mode fallback — contents API for non-purchased batches ──
-    try:
-        contents_url = f"https://api.penpencil.co/v3/batches/{batch_id}/subject/{subject_id}/contents"
-        params = {
-            "page": "1",
-            "limit": "100",
-            "contentType": "videos",
-            "tag": "",
-            "sortBy": "DATE"
-        }
-        async with session.get(contents_url, headers=headers, params=params, timeout=15) as resp:
-            if resp.status == 200:
-                contents_data = await resp.json()
-                items = contents_data.get("data", []) if contents_data else []
-                for item in items:
-                    # Match by schedule _id
-                    if item.get("_id") == schedule_id:
-                        vd = item.get("videoDetails", {})
-                        # Try all possible URL fields in videoDetails
-                        for key in ["url", "videoUrl", "baseUrl", "manifestUrl", "mpdUrl"]:
-                            vurl = vd.get(key)
-                            if vurl and isinstance(vurl, str) and vurl.startswith("http"):
-                                vid = vd.get("_id", video_details_id)
-                                return f"{topic}:{vurl}&parentId={batch_id}&childId={schedule_id}&videoId={vid}"
-                        break
-    except Exception as e:
-        logging.warning(f"Contents fallback failed for {schedule_id}: {e}")
-
-    return None
-
-
-@bot.on_message(filters.command("testextract") & filters.private)
-async def testextract_command(bot, m: Message):
-    """
-    Test command: extract videos from hardcoded Physics chapter IDs
-    of Yakeen NEET Hindi 2027 batch using the user's token.
-    """
-    user_id = m.from_user.id
-
-    # Check auth
-    if user_id not in _load_auth_users():
-        await m.reply_text("**❌ Unauthorized. Use /start to login first.**")
-        return
-
-    editable = await m.reply_text(
-        "**🔬 Test Extract**\n\n"
-        "Apna PW Token paste karo:"
-    )
-
-    try:
-        input_token = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
-        token = input_token.text.strip()
-        await input_token.delete(True)
-    except:
-        await editable.edit("**Timeout! Please respond within 120 seconds.**")
-        return
-
-    if not token or len(token) < 50:
-        await editable.edit("**❌ Invalid token. Please try again.**")
-        return
-
-    headers = get_pw_mobile_headers(token)
-
-    start_time = time.time()
-    results = []
-    failed = []
-
-    loop = asyncio.get_event_loop()
-    connector = aiohttp.TCPConnector(limit=10, loop=loop)
-
-    async with aiohttp.ClientSession(connector=connector, loop=loop) as session:
-
-        # Free lecture — URL already known, no API call needed
-        free_item = TEST_SCHEDULE_ITEMS[-1]
-        results.append(f"{free_item[2]} [FREE]:{FREE_LECTURE_URL}&parentId={TEST_BATCH_ID}&childId={free_item[0]}&videoId={free_item[1]}")
-
-        # Purchased lectures — fetch schedule-details for each
-        await editable.edit(
-            f"**🔬 Test Extract Running...**\n\n"
-            f"Fetching {len(TEST_SCHEDULE_ITEMS) - 1} purchased lecture URLs...\n"
-            f"Batch: Yakeen NEET Hindi 2027\n"
-            f"Subject: {TEST_SUBJECT_NAME}"
-        )
-
-        tasks = []
-        for schedule_id, video_details_id, topic, date in TEST_SCHEDULE_ITEMS[:-1]:
-            tasks.append(extract_single_schedule_video(
-                session, TEST_BATCH_ID, TEST_SUBJECT_ID,
-                schedule_id, video_details_id, topic, headers
-            ))
-
-        task_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for i, (result, item) in enumerate(zip(task_results, TEST_SCHEDULE_ITEMS[:-1])):
-            schedule_id, video_details_id, topic, date = item
-            if isinstance(result, Exception) or result is None:
-                failed.append(f"❌ {topic} ({date})")
-            else:
-                results.append(result)
-
-    # Build output file
-    elapsed = int(time.time() - start_time)
-    output_lines = [
-        f"# Test Extract — Yakeen NEET Hindi 2027",
-        f"# Subject: Physics — गणितीय उपकरण",
-        f"# Total: {len(results)} videos extracted, {len(failed)} failed",
-        f"# Time: {elapsed}s",
-        f"",
-    ] + results
-
-    if failed:
-        output_lines += ["", "# FAILED:"] + failed
-
-    output_text = "\n".join(output_lines)
-    filename = f"testextract_{user_id}_physics.txt"
-
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(output_text)
-
-    await editable.delete()
-
-    caption = (
-        f"**🔬 Test Extract Complete**\n\n"
-        f"Batch: `Yakeen NEET Hindi 2027`\n"
-        f"Subject: `Physics — गणितीय उपकरण`\n"
-        f"✅ Videos extracted: `{len(results)}`\n"
-        f"❌ Failed: `{len(failed)}`\n"
-        f"⏱ Time: `{elapsed}s`"
-    )
-
-    with open(filename, "rb") as f:
-        await m.reply_document(document=f, caption=caption, file_name=filename)
-
-    try:
-        os.remove(filename)
-    except Exception:
-        pass
 
 
 # ===============================================================
